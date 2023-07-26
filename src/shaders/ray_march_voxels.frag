@@ -34,7 +34,8 @@ const float pi = 3.14159265358;
 const float e = 2.718281828;
 const int maxIterations = 35;
 const float maxIterationsF = float(maxIterations);
-const int globalMaxDepth = 16;
+const int globalMaxDepth = 15;
+const float epsilon = 0.005;
 const float unitEpsilon = 1.001;
 const vec3 dirX = vec3(1.0, 0.0, 0.0);
 const vec3 dirY = vec3(0.0, 1.0, 0.0);
@@ -50,7 +51,7 @@ const vec4 groundColour = vec4(0.2, 0.08, 0.08, 1.0);
 const float goalRadiusSquared = 0.75;
 
 // Phong lighting
-const float ambientStrength = 0.475;
+const float ambientStrength = 0.55;
 const vec3 lightColor = vec3(0.85);
 const vec3 ambientLight = ambientStrength * lightColor;
 
@@ -83,17 +84,17 @@ vec3 cubeNorm(vec3 t) {
 vec3 projectToOutsideDistance(vec3 t) {
 	vec3 s = abs(t);
 	if(s.x >= s.y && s.x >= s.z) {
-		return vec3(sign(t.x) * unitEpsilon, t.y, t.z) - t;
+		return vec3(sign(t.x) * unitEpsilon - t.x, 0.0, 0.0);
 	} else if(s.y >= s.x && s.y >= s.z) {
-		return vec3(t.x, sign(t.y) * unitEpsilon, t.z) - t;
+		return vec3(0.0, sign(t.y) * unitEpsilon - t.y, 0.0);
 	} else {
-		return vec3(t.x, t.y, sign(t.z) * unitEpsilon) - t;
+		return vec3(0.0, 0.0, sign(t.z) * unitEpsilon - t.z);
 	}
 }
 
 bool insideCube(vec3 t) {
 	t = abs(t);
-	return t.x < 1.0 && t.y < 1.0 && t.z < 1.0;
+	return t.x <= 1.0 && t.y <= 1.0 && t.z <= 1.0;
 }
 
 bool projectToRootVoxel(inout vec3 p, vec3 d, vec3 invD, inout float travelDist) {
@@ -101,7 +102,7 @@ bool projectToRootVoxel(inout vec3 p, vec3 d, vec3 invD, inout float travelDist)
 
 	vec3 s;
 	float t;
-	if(abs(p.x) >= 1.0) {
+	if(abs(p.x) > 1.0) {
 		t = (sign(p.x) - p.x)*invD.x;
 		if(t >= 0.0) {
 			s = p + t*d;
@@ -112,7 +113,7 @@ bool projectToRootVoxel(inout vec3 p, vec3 d, vec3 invD, inout float travelDist)
 			}
 		}
 	}
-	if(abs(p.y) >= 1.0) {
+	if(abs(p.y) > 1.0) {
 		t = (sign(p.y) - p.y)*invD.y;
 		if(t >= 0.0) {
 			s = p + t*d;
@@ -123,7 +124,7 @@ bool projectToRootVoxel(inout vec3 p, vec3 d, vec3 invD, inout float travelDist)
 			}
 		}
 	}
-	if(abs(p.z) >= 1.0) {
+	if(abs(p.z) > 1.0) {
 		t = (sign(p.z) - p.z)*invD.z;
 		if(t >= 0.0) {
 			s = p + t*d;
@@ -141,13 +142,13 @@ float escapeCubeDistance(vec3 p, vec3 d, vec3 invD) {
 	vec3 s;
 	float t = (unitEpsilon*sign(d.x) - p.x)*invD.x;
 	s = p + t*d;
-	if(abs(s.y) <= 1.0 && abs(s.z) <= 1.0) {
+	if(abs(s.y) < 1.0 && abs(s.z) < 1.0) {
 		return t;
 	}
 
 	t = (unitEpsilon*sign(d.y) - p.y)*invD.y;
 	s = p + t*d;
-	if(abs(s.x) <= 1.0 && abs(s.z) <= 1.0) {
+	if(abs(s.x) < 1.0 && abs(s.z) < 1.0) {
 		return t;
 	}
 
@@ -258,7 +259,7 @@ const float maxBrightness = 1.3;
 const float maxBrightnessR2 = maxBrightness*maxBrightness;
 vec4 scaleColor(float si, vec4 col) {
 	float temp = 1.0 - si/maxIterationsF;
-	return mix(fogColour, col, temp*temp);
+	return mix(fogColour, col, temp);
 }
 
 vec3 gradient;
@@ -323,6 +324,7 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 					travelDist += t;
 				}
 			} else {
+				float borderOutline = pow(min(abs(s.x - s.y), min(abs(s.x - s.z), abs(s.y - s.z))), 0.125);
 				gradient = cubeNorm(s);
 				p += projectToOutsideDistance(s) * scale;
 
@@ -335,7 +337,7 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 				// 	d -= 2.0*dot(d, gradient)*gradient;
 				// } else {
 					//return col/weight;
-					return scaleColor(i, vec4(phongLighting(col.xyz/weight, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0));
+					return scaleColor(i, vec4(borderOutline*phongLighting(col.xyz/weight, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0));
 				// }
 			}
 		}

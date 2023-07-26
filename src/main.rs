@@ -25,7 +25,10 @@ mod voxels;
 
 const TITLE: &str = "voxel_flight_simulator";
 
+const DEFAULT_CAMERA_POSITION: Vector3<f32> = Vector3::new(0.01, 0.2, -2.);
+const DEFAULT_CAMERA_ORIENTATION: Quaternion<f32> = Quaternion::new(1., 0., 0., 0.);
 const DEFAULT_CAMERA_SPEED: f32 = 0.25;
+const CAMERA_BOOST_FACTOR: f32 = 1.75;
 
 struct App {
     pub app_start_time: Instant,
@@ -58,6 +61,7 @@ struct KeyState {
     pub down: bool,
     pub left: bool,
     pub right: bool,
+    pub space: bool,
 }
 
 fn main() {
@@ -66,8 +70,7 @@ fn main() {
 
     // Run event loop until app exits.
     event_loop.run(move |event, _, control_flow| {
-        let renderer = app.window_manager.get_primary_renderer_mut().unwrap();
-        let window_size = renderer.window_size();
+        let window_size =  app.window_manager.get_primary_renderer().unwrap().window_size();
         if window_size.contains(&0.0f32) {
             return;
         }
@@ -77,10 +80,10 @@ fn main() {
                 let _pass_events_to_game = !app.overlay.gui.update(&event);
                 match event {
                     WindowEvent::Resized(_) => {
-                        renderer.resize();
+                        app.window_manager.get_primary_renderer_mut().unwrap().resize();
                     }
                     WindowEvent::ScaleFactorChanged { .. } => {
-                        renderer.resize();
+                        app.window_manager.get_primary_renderer_mut().unwrap().resize();
                     }
                     WindowEvent::CloseRequested => {
                         *control_flow = ControlFlow::Exit;
@@ -142,6 +145,10 @@ fn main() {
                             app.game_state.key_state.right = true;
                             app.game_state.waiting_for_input = false;
                         }
+                        VirtualKeyCode::Space => {
+                            app.game_state.key_state.space = true;
+                            app.game_state.waiting_for_input = false;
+                        }
                         _ => (),
                     },
                     WindowEvent::KeyboardInput {
@@ -165,6 +172,9 @@ fn main() {
                         }
                         VirtualKeyCode::Right => {
                             app.game_state.key_state.right = false;
+                        }
+                        VirtualKeyCode::Space => {
+                            app.game_state.key_state.space = false;
                         }
                         _ => (),
                     },
@@ -191,22 +201,27 @@ fn main() {
                         demo_rotation * app.game_state.camera_quaternion;
                 } else {
                     use voxels::Intersection;
+                    let voxel_buffer = app.voxel_buffer.clone();
                     let intersection = voxels::octree_scale_and_collision_of_point(
                         app.game_state.camera_position,
-                        &app.voxel_buffer.read().unwrap(),
+                        &voxel_buffer.read().unwrap(),
                     );
                     match intersection {
                         Intersection::Empty(scale) => {
                             app.game_state.camera_position +=
-                                app.game_state.camera_quaternion.rotate_vector(Vector3::new(
+                                if app.game_state.key_state.space {
+                                    CAMERA_BOOST_FACTOR
+                                } else {
+                                    1.
+                                } * app.game_state.camera_quaternion.rotate_vector(Vector3::new(
                                     0.,
                                     0.,
                                     delta_time * app.game_state.camera_speed,
                                 ));
 
                             // Use exponential smoothing to make the camera speed change with scale.
-                            const SMOOTHING_FACTOR: f32 = -0.67;
-                            const SCALING_FACTOR: f32 = 0.78;
+                            const SMOOTHING_FACTOR: f32 = -0.69;
+                            const SCALING_FACTOR: f32 = 0.777;
                             let smooth = 1. - (SMOOTHING_FACTOR * delta_time).exp();
                             app.game_state.camera_speed += smooth
                                 * (DEFAULT_CAMERA_SPEED / scale.powf(SCALING_FACTOR)
@@ -214,7 +229,7 @@ fn main() {
 
                             let pitch = f32::from(app.game_state.key_state.up)
                                 - f32::from(app.game_state.key_state.down);
-                            const PITCH_SPEED: f32 = 1.2;
+                            const PITCH_SPEED: f32 = 1.25;
                             let roll = f32::from(app.game_state.key_state.left)
                                 - f32::from(app.game_state.key_state.right);
                             const ROLL_SPEED: f32 = 2.;
@@ -228,12 +243,12 @@ fn main() {
                         Intersection::Portal(depth) => {
                             let points_gained = depth + 1 - voxels::MINIMUM_GOAL_DEPTH;
                             let new_points = app.game_state.points + points_gained;
-                            println!("Portal depth: {depth}, +{points_gained}, Score: {new_points}\n");
+                            println!(
+                                "{:?}: Portal depth: {depth}, +{points_gained}, Score: {new_points}\n",
+                                app.app_start_time.elapsed(),
+                            );
 
-                            let (descriptor_set, voxel_buffer) =
-                                create_random_world(app.engine.allocators(), app.engine.pipeline());
-                            app.descriptor_set = descriptor_set;
-                            app.voxel_buffer = voxel_buffer;
+                            app.new_random_world();
 
                             app.game_state = GameState {
                                 key_state: app.game_state.key_state,
@@ -244,6 +259,7 @@ fn main() {
                         }
                     };
                 }
+                let renderer = app.window_manager.get_primary_renderer_mut().unwrap();
 
                 // Get secondary command buffer for rendering GUI.
                 let gui_command_buffer = if app.overlay.is_visible {
@@ -288,7 +304,7 @@ fn main() {
                 renderer.present(after_future, true);
             }
             Event::MainEventsCleared => {
-                renderer.window().request_redraw();
+                app.window_manager.get_primary_renderer().unwrap().window().request_redraw();
             }
             _ => (),
         }
@@ -313,9 +329,7 @@ impl App {
                 present_mode: vulkano::swapchain::PresentMode::Mailbox,
                 ..WindowDescriptor::default()
             },
-            |ci| {
-                println!("Swapchain creation info {:?}", ci);
-            },
+            |_| {},
         );
         let renderer = window_manager.get_primary_renderer().unwrap();
 
@@ -412,8 +426,8 @@ fn create_random_world(
 impl GameState {
     pub fn default() -> Self {
         GameState {
-            camera_position: Vector3::new(0.01, 0.2, -2.),
-            camera_quaternion: Quaternion::new(1., 0., 0., 0.),
+            camera_position: DEFAULT_CAMERA_POSITION,
+            camera_quaternion: DEFAULT_CAMERA_ORIENTATION,
             camera_speed: DEFAULT_CAMERA_SPEED,
             key_state: KeyState::default(),
             points: 0,

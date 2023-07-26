@@ -275,18 +275,18 @@ pub fn generate_recursive_voxel_octree(desired_voxel_count: u32) -> Vec<VoxelCom
         let mut pop_node_option = |colour: &mut Vector4<f32>| -> GraphRef {
             let random_type = random.sample();
             // TODO: Change the moving target function to better approach the desired voxel count. Current is tuned for 256.
-            let moving_target = 1. / (0.5 * depth as f32 + 1.);
+            let moving_target = 1. / (0.55 * depth as f32 + 1.);
             if random_type < 0.45 {
                 // 45% chance of empty node
                 GraphRef::Empty
-            } else if random_type < 0.5_f32.powf(moving_target) {
+            } else if random_type < 0.45_f32.powf(moving_target) {
                 // Next most likely is a leaf node, but not at the first depths.
                 let v = random_leaf(random, id, depth);
                 *colour += v.average_colour;
                 sum_count += 1.;
 
                 GraphRef::Ref(Box::new(v))
-            } else if random_type < 0.85_f32.powf(moving_target.powf(0.75)) {
+            } else if random_type < 0.82_f32.powf(moving_target.powf(0.65)) {
                 // Next most likely is a non-recursive voxel, however, should be less likely at latter depths.
                 let v = roll_voxel_graph(random, depth + 1, id);
                 *colour += v.average_colour;
@@ -349,7 +349,7 @@ pub fn octree_scale_and_collision_of_point(
     position: Vector3<f32>,
     octree: &[VoxelCompact],
 ) -> Intersection {
-    const MAX_DEPTH: u32 = 17;
+    const MAX_DEPTH: u32 = 16;
     const GOAL_RADIUS_SQUARED: f32 = 0.75;
     fn f(
         scale: f32,
