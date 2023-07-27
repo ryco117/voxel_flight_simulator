@@ -32,7 +32,9 @@ const BBL_CELL: Vector3<f32> = Vector3::new(-0.5, -0.5, 0.5);
 const BBR_CELL: Vector3<f32> = Vector3::new(0.5, -0.5, 0.5);
 
 pub const MINIMUM_GOAL_DEPTH: u32 = 6;
-pub const NULL_VOXEL_INDEX: u32 = 0xFFFFFFFF;
+pub const MAXIMUM_VOXEL_DEPTH: u32 = 15;
+pub const MAXIMUM_GOAL_DEPTH: u32 = MAXIMUM_VOXEL_DEPTH - 1;
+pub const NULL_VOXEL_INDEX: u32 = 0xFFFF_FFFF;
 
 const LEAF_VOXEL: Voxel = Voxel {
     average_colour: Vector4::new(0., 0., 0., 0.),
@@ -106,7 +108,7 @@ fn compact_octree_from_root(root_voxel: Voxel, voxel_count: u32) -> Vec<VoxelCom
         voxel_count: u32,
     ) -> Vec<VoxelCompact> {
         // If there are no more voxels to explore, return the accumulator.
-        if to_explore.len() == 0 {
+        if to_explore.is_empty() {
             // Ensure that we have explored all voxels before leaving.
             assert_eq!(voxel_count as usize, acc.len());
             return acc;
@@ -191,7 +193,16 @@ fn compact_octree_from_root(root_voxel: Voxel, voxel_count: u32) -> Vec<VoxelCom
     breadth_first_search_octree(voxel_array, to_explore, voxel_count)
 }
 
-pub fn generate_recursive_voxel_octree(desired_voxel_count: u32) -> Vec<VoxelCompact> {
+#[derive(Default)]
+pub struct OctreeStats {
+    pub goal_count: u32,
+    pub voxel_count: u32,
+}
+
+pub fn generate_recursive_voxel_octree(
+    desired_voxel_count: u32,
+    desired_portal_count: u32,
+) -> (Vec<VoxelCompact>, OctreeStats) {
     pub struct RandomFloats {
         random: rand::rngs::ThreadRng,
         dist: Uniform<f32>,
@@ -217,30 +228,32 @@ pub fn generate_recursive_voxel_octree(desired_voxel_count: u32) -> Vec<VoxelCom
     }
 
     // Generate a random leaf-voxel.
-    fn random_leaf(random: &mut RandomFloats, id: &mut u32, depth: u32) -> Voxel {
+    fn random_leaf(random: &mut RandomFloats, depth: u32, stats: &mut OctreeStats) -> Voxel {
         let colour = random_colour(random);
-        *id += 1;
+        stats.voxel_count += 1;
+        let id = stats.voxel_count;
 
         if depth >= MINIMUM_GOAL_DEPTH {
             let r = random.sample();
             if r > 0.15 {
                 Voxel {
                     average_colour: colour,
-                    id: *id,
+                    id,
                     ..LEAF_VOXEL
                 }
-            } else if r > 0.095 {
+            } else if r > 0.0875 {
+                stats.goal_count += 1;
                 Voxel {
                     average_colour: colour,
                     flags: 2, // TODO: Create a proper enum type for flags.
-                    id: *id,
+                    id,
                     ..LEAF_VOXEL
                 }
             } else {
                 Voxel {
                     average_colour: colour,
                     flags: 3, // TODO: Create a proper enum type for flags.
-                    id: *id,
+                    id,
                     ..LEAF_VOXEL
                 }
             }
@@ -248,14 +261,14 @@ pub fn generate_recursive_voxel_octree(desired_voxel_count: u32) -> Vec<VoxelCom
             if random.sample() > 0.125 {
                 Voxel {
                     average_colour: colour,
-                    id: *id,
+                    id,
                     ..LEAF_VOXEL
                 }
             } else {
                 Voxel {
                     average_colour: colour,
                     flags: 3, // TODO: Create a proper enum type for flags.
-                    id: *id,
+                    id,
                     ..LEAF_VOXEL
                 }
             }
@@ -265,30 +278,30 @@ pub fn generate_recursive_voxel_octree(desired_voxel_count: u32) -> Vec<VoxelCom
     // Get a random recursion depth from an exponential distribution.
     fn random_recurse(random: &mut RandomFloats, max_depth: u32) -> u32 {
         let roll = 1.0 - random.sample();
-        (roll.log2().abs() as u32).min(max_depth)
+        (roll.log(1.8).abs() as u32).min(max_depth)
     }
 
     // Recursively form a graph of voxels in a depth-first manner.
-    fn roll_voxel_graph(random: &mut RandomFloats, depth: u32, id: &mut u32) -> Voxel {
+    fn roll_voxel_graph(random: &mut RandomFloats, depth: u32, stats: &mut OctreeStats) -> Voxel {
         let mut sum_colour = Vector4::zero();
         let mut sum_count: f32 = 0.;
         let mut pop_node_option = |colour: &mut Vector4<f32>| -> GraphRef {
             let random_type = random.sample();
             // TODO: Change the moving target function to better approach the desired voxel count. Current is tuned for 256.
-            let moving_target = 1. / (0.55 * depth as f32 + 1.);
+            let moving_target = 1. / (0.65 * depth as f32 + 1.);
             if random_type < 0.45 {
                 // 45% chance of empty node
                 GraphRef::Empty
             } else if random_type < 0.45_f32.powf(moving_target) {
                 // Next most likely is a leaf node, but not at the first depths.
-                let v = random_leaf(random, id, depth);
+                let v = random_leaf(random, depth, stats);
                 *colour += v.average_colour;
                 sum_count += 1.;
 
                 GraphRef::Ref(Box::new(v))
-            } else if random_type < 0.82_f32.powf(moving_target.powf(0.65)) {
+            } else if random_type < 0.825_f32.powf(moving_target.powf(0.625)) {
                 // Next most likely is a non-recursive voxel, however, should be less likely at latter depths.
-                let v = roll_voxel_graph(random, depth + 1, id);
+                let v = roll_voxel_graph(random, depth + 1, stats);
                 *colour += v.average_colour;
                 sum_count += 1.;
 
@@ -310,7 +323,7 @@ pub fn generate_recursive_voxel_octree(desired_voxel_count: u32) -> Vec<VoxelCom
         // Ensure that the sum count is never still 0.
         sum_count = sum_count.max(1.);
 
-        *id += 1;
+        stats.voxel_count += 1;
         Voxel {
             average_colour: sum_colour / sum_count,
             node_ftl: ftl,
@@ -322,19 +335,19 @@ pub fn generate_recursive_voxel_octree(desired_voxel_count: u32) -> Vec<VoxelCom
             node_bbl: bbl,
             node_bbr: bbr,
             flags: 0,
-            id: *id,
+            id: stats.voxel_count,
         }
     }
 
     let random = &mut RandomFloats::default();
     loop {
         // Loop through random graphs.
-        let mut id = 0;
-        let v = roll_voxel_graph(random, 0, &mut id);
+        let mut stats = OctreeStats::default();
+        let v = roll_voxel_graph(random, 0, &mut stats);
 
         // If we have generated enough voxels, compactify the octree and return it.
-        if id >= desired_voxel_count {
-            return compact_octree_from_root(v, id);
+        if stats.voxel_count >= desired_voxel_count && stats.goal_count >= desired_portal_count {
+            return (compact_octree_from_root(v, stats.voxel_count), stats);
         }
     }
 }
@@ -349,7 +362,6 @@ pub fn octree_scale_and_collision_of_point(
     position: Vector3<f32>,
     octree: &[VoxelCompact],
 ) -> Intersection {
-    const MAX_DEPTH: u32 = 16;
     const GOAL_RADIUS_SQUARED: f32 = 0.75;
     fn f(
         scale: f32,
@@ -358,7 +370,7 @@ pub fn octree_scale_and_collision_of_point(
         index: u32,
         octree: &[VoxelCompact],
     ) -> Intersection {
-        if iter == MAX_DEPTH {
+        if iter > MAXIMUM_VOXEL_DEPTH {
             Intersection::Collision
         } else if index == NULL_VOXEL_INDEX {
             Intersection::Empty(scale)

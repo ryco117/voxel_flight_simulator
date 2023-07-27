@@ -51,7 +51,7 @@ const vec4 groundColour = vec4(0.2, 0.08, 0.08, 1.0);
 const float goalRadiusSquared = 0.75;
 
 // Phong lighting
-const float ambientStrength = 0.55;
+const float ambientStrength = 0.65;
 const vec3 lightColor = vec3(0.85);
 const vec3 ambientLight = ambientStrength * lightColor;
 
@@ -155,7 +155,7 @@ float escapeCubeDistance(vec3 p, vec3 d, vec3 invD) {
 	return (unitEpsilon*sign(d.z) - p.z)*invD.z;
 }
 
-uint voxelIndex(inout vec3 p, inout float scale, int scaleDepth) {
+uint voxelIndex(inout vec3 p, inout float scale, int maxDepth) {
 	uint index = 0;
 
 	// Determine smallest scale voxel cell this point exists in
@@ -202,7 +202,7 @@ uint voxelIndex(inout vec3 p, inout float scale, int scaleDepth) {
 			}
 		}
 		p += p;
-	} while(++i < scaleDepth && voxelOctree.voxels[index].flags == 0);
+	} while(++i < maxDepth && voxelOctree.voxels[index].flags == 0);
 	return index;
 }
 
@@ -319,12 +319,27 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 					//return vec4(phongLighting(portalCol, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);
 				} else {
 					// Copy pasta empty cell
-					t = escapeCubeDistance(s, d, invD) * scale;
-					p += t * d;
-					travelDist += t;
+					// t = escapeCubeDistance(s, d, invD) * scale;
+					// p += t * d;
+					// travelDist += t;
+
+					// Gravity-based raytracing
+					vec3 c = p - scale*s;
+					for(int j = 0; j < maxIterations; ++j) {
+						float r2 = dot(s, s);
+						if(!insideCube(s) || r2 < goalRadiusSquared) {
+							break;
+						}
+						d += 0.025 * s / (r2*sqrt(r2));
+						d = normalize(d);
+						s += d * 0.075;
+					}
+					vec3 q = c + scale*s;
+					travelDist += length(q - p);
+					p = q;
 				}
 			} else {
-				float borderOutline = pow(min(abs(s.x - s.y), min(abs(s.x - s.z), abs(s.y - s.z))), 0.125);
+				float borderOutline = pow(min(abs(s.x - s.y), min(abs(s.x - s.z), abs(s.y - s.z))), 0.15);
 				gradient = cubeNorm(s);
 				p += projectToOutsideDistance(s) * scale;
 

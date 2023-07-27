@@ -273,7 +273,7 @@ impl AppPipeline {
                 0,
                 descriptor_set,
             )
-            .draw(4 as u32, 1, 0, 0)
+            .draw(4, 1, 0, 0)
             .unwrap();
 
         builder.build().unwrap()

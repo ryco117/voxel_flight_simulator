@@ -27,8 +27,8 @@ const TITLE: &str = "voxel_flight_simulator";
 
 const DEFAULT_CAMERA_POSITION: Vector3<f32> = Vector3::new(0.01, 0.2, -2.);
 const DEFAULT_CAMERA_ORIENTATION: Quaternion<f32> = Quaternion::new(1., 0., 0., 0.);
-const DEFAULT_CAMERA_SPEED: f32 = 0.25;
-const CAMERA_BOOST_FACTOR: f32 = 1.75;
+const DEFAULT_CAMERA_SPEED: f32 = 0.175;
+const CAMERA_BOOST_FACTOR: f32 = 3.;
 
 struct App {
     pub app_start_time: Instant,
@@ -201,10 +201,9 @@ fn main() {
                         demo_rotation * app.game_state.camera_quaternion;
                 } else {
                     use voxels::Intersection;
-                    let voxel_buffer = app.voxel_buffer.clone();
                     let intersection = voxels::octree_scale_and_collision_of_point(
                         app.game_state.camera_position,
-                        &voxel_buffer.read().unwrap(),
+                        &app.voxel_buffer.read().unwrap(),
                     );
                     match intersection {
                         Intersection::Empty(scale) => {
@@ -220,12 +219,16 @@ fn main() {
                                 ));
 
                             // Use exponential smoothing to make the camera speed change with scale.
-                            const SMOOTHING_FACTOR: f32 = -0.69;
-                            const SCALING_FACTOR: f32 = 0.777;
-                            let smooth = 1. - (SMOOTHING_FACTOR * delta_time).exp();
-                            app.game_state.camera_speed += smooth
-                                * (DEFAULT_CAMERA_SPEED / scale.powf(SCALING_FACTOR)
-                                    - app.game_state.camera_speed);
+                            const SMOOTHING_INCREASE_FACTOR: f32 = -0.125;
+                            const SMOOTHING_DECREASE_FACTOR: f32 = -0.9;
+                            const SCALING_FACTOR: f32 = 0.75;
+                            let target_speed = DEFAULT_CAMERA_SPEED / scale.powf(SCALING_FACTOR);
+                            let smooth = |factor: f32| 1. - (factor * delta_time).exp();
+                            app.game_state.camera_speed += if target_speed > app.game_state.camera_speed {
+                                smooth(SMOOTHING_INCREASE_FACTOR)
+                            } else {
+                                smooth(SMOOTHING_DECREASE_FACTOR)
+                            } * (target_speed - app.game_state.camera_speed);
 
                             let pitch = f32::from(app.game_state.key_state.up)
                                 - f32::from(app.game_state.key_state.down);
@@ -241,8 +244,14 @@ fn main() {
                             app.game_state = GameState::default();
                         }
                         Intersection::Portal(depth) => {
-                            let points_gained = depth + 1 - voxels::MINIMUM_GOAL_DEPTH;
+                            let points_gained =
+                                if depth == voxels::MAXIMUM_GOAL_DEPTH {
+                                    6
+                                } else {
+                                    0
+                                } + depth + 1 - voxels::MINIMUM_GOAL_DEPTH;
                             let new_points = app.game_state.points + points_gained;
+                            // TODO: Write each run to a file.
                             println!(
                                 "{:?}: Portal depth: {depth}, +{points_gained}, Score: {new_points}\n",
                                 app.app_start_time.elapsed(),
@@ -281,7 +290,7 @@ fn main() {
                 // Render main app with overlay from GUI.
                 let push_constants = {
                     fn light_dir(time: f32) -> Vector3<f32> {
-                        let delta = time / -15.;
+                        let delta = time / -20.;
                         Vector3::new(0.9165 * delta.sin(), 0.4, 0.9165 * delta.cos())
                     }
                     let time = app.app_start_time.elapsed().as_secs_f32();
@@ -392,8 +401,11 @@ fn create_random_world(
     pipeline: &Arc<GraphicsPipeline>,
 ) -> (Arc<PersistentDescriptorSet>, Subbuffer<[VoxelCompact]>) {
     // Generate a random voxel-octree.
-    let voxel_octree = voxels::generate_recursive_voxel_octree(256);
-    println!("Octree Unique-Voxel Count: {:?}", voxel_octree.len());
+    let (voxel_octree, stats) = voxels::generate_recursive_voxel_octree(256, 8);
+    println!(
+        "Voxel Count: {:?}, Portal Count: {:?}",
+        stats.voxel_count, stats.goal_count
+    );
 
     // Upload the voxel-octree to the GPU.
     let storage_usage = BufferCreateInfo {
