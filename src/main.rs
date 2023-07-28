@@ -204,7 +204,7 @@ fn main() {
                 app.last_draw_time = Some(Instant::now());
 
                 // Update gamepad state.
-                app.game_state.waiting_for_input &= !update_controller_inputs(&mut app.game_state.gilrs, &mut app.game_state.gamepad_state);
+                app.game_state.waiting_for_input &= !update_controller_inputs(&mut app.game_state.gilrs, &mut app.game_state.gamepad_state, false);
 
                 if app.game_state.waiting_for_input {
                     // Apply demo camera controls until we get input.
@@ -462,12 +462,14 @@ fn create_random_world(
     )
 }
 
-fn update_controller_inputs(gilrs: &mut Gilrs, gamepad_state: &mut GamepadState) -> bool {
+fn update_controller_inputs(gilrs: &mut Gilrs, gamepad_state: &mut GamepadState, joystick_mode: bool) -> bool {
     // Default to handling no events.
     let mut processed = false;
 
     // Process all queued events.
     while let Some(event) = gilrs.next_event() {
+        gilrs.gamepad(event.id).name();
+
         use gilrs::ev::EventType;
         match event.event {
             EventType::AxisChanged(axis, val, _) => match axis {
@@ -479,13 +481,8 @@ fn update_controller_inputs(gilrs: &mut Gilrs, gamepad_state: &mut GamepadState)
                     gamepad_state.left_stick[1] = val;
                     processed = true;
                 }
-                a => {
-                    println!("Unhandled axis: {:?}", a);
-                    gamepad_state.yaw = val;
-                    processed = true;
-                }
                 _ => (),
-            },
+            }
             EventType::ButtonPressed(gilrs::Button::South, _) => {
                 gamepad_state.south_button = true;
                 processed = true;
@@ -494,8 +491,16 @@ fn update_controller_inputs(gilrs: &mut Gilrs, gamepad_state: &mut GamepadState)
                 gamepad_state.south_button = false;
                 processed = true;
             }
-            EventType::ButtonChanged(gilrs::Button::RightTrigger2, val, _) => {
+            EventType::ButtonChanged(gilrs::Button::RightTrigger2, val, _) if joystick_mode => {
                 gamepad_state.yaw = val + val - 1.;
+                processed = true;
+            }
+            EventType::ButtonChanged(gilrs::Button::RightTrigger, val, _) if !joystick_mode => {
+                gamepad_state.yaw = val;
+                processed = true;
+            }
+            EventType::ButtonChanged(gilrs::Button::LeftTrigger, val, _) if !joystick_mode => {
+                gamepad_state.yaw = -val;
                 processed = true;
             }
             _ => (),

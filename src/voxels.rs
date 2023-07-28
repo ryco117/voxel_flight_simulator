@@ -244,13 +244,13 @@ pub fn generate_recursive_voxel_octree(
 
         if depth >= MINIMUM_GOAL_DEPTH {
             let r = random.sample();
-            if r > 0.15 {
+            if r > 0.16 {
                 Voxel {
                     average_colour: colour,
                     id,
                     ..LEAF_VOXEL
                 }
-            } else if r > 0.085 {
+            } else if r > 0.08 {
                 stats.goal_count += 1;
                 Voxel {
                     average_colour: colour,
@@ -267,7 +267,7 @@ pub fn generate_recursive_voxel_octree(
                 }
             }
         } else {
-            if random.sample() > 0.125 {
+            if random.sample() > 0.1 {
                 Voxel {
                     average_colour: colour,
                     id,

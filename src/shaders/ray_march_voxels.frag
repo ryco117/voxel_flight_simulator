@@ -32,7 +32,7 @@ layout(set = 0, binding = 0) readonly buffer VoxelOctree {
 
 const float pi = 3.14159265358;
 const float e = 2.718281828;
-const int maxIterations = 35;
+const int maxIterations = 40;
 const float maxIterationsF = float(maxIterations);
 const int globalMaxDepth = 15;
 const float epsilon = 0.005;
@@ -44,14 +44,13 @@ const vec3 negDirX = vec3(-1.0, 0.0, 0.0);
 const vec3 negDirY = vec3(0.0, -1.0, 0.0);
 const vec3 negDirZ = vec3(0.0, 0.0, -1.0);
 
-const vec4 fogColour = vec4(0.42, 0.525, 0.45, 1.0);
-const vec4 skyColour = vec4(0.08, 0.2, 0.75, 1.0);
-const vec4 groundColour = vec4(0.2, 0.08, 0.08, 1.0);
-
 const float goalRadiusSquared = 0.75;
 
 // Phong lighting
-const float ambientStrength = 0.65;
+const vec4 fogColour = vec4(0.42, 0.525, 0.45, 1.0);
+const vec4 skyColour = vec4(0.08, 0.2, 0.75, 1.0);
+const vec4 groundColour = vec4(0.2, 0.08, 0.08, 1.0);
+const float ambientStrength = 0.45;
 const vec3 lightColor = vec3(0.85);
 const vec3 ambientLight = ambientStrength * lightColor;
 
@@ -274,6 +273,35 @@ vec4 escapeColour(vec3 d) {
 	return mix(groundSkyColour, vec4(lightColor, 1.0), clamp(64.0*dot(d, push.light_dir) - 63.0, 0.0, 1.0));
 }
 
+// https://www.shadertoy.com/view/XdXGW8 - Copyright © 2013 Inigo Quilez
+vec3 grad(ivec3 z) {
+    // 2D to 1D  (feel free to replace by some other)
+    int n = z.x + z.y*1111 + z.z*5227;
+
+    // Hugo Elias hash (feel free to replace by another one)
+    n = (n<<13)^n;
+    n = (n*(n*n*15731+789221)+1376312589)>>16;
+
+    // simple random vectors
+    return vec3(cos(float(n)), sin(float(n)), 2.0*fract(log(abs(float(n)) + 1.0)) - 1.0);
+}
+float gradient_noise(vec3 p) {
+    ivec3 i = ivec3(floor(p));
+	vec3 f = fract(p);
+
+	vec3 u = f*f*(3.0 - 2.0*f); // feel free to replace by a quintic smoothstep instead
+
+    return mix(
+		mix(mix(dot(grad(i), f),
+				dot(grad(i + ivec3(1, 0, 0)), f - vec3(1.0, 0.0, 0.0)), u.x),
+			mix(dot(grad(i + ivec3(0, 1, 0)), f - vec3(0.0, 1.0, 0.0)), 
+				dot(grad(i + ivec3(1, 1, 0)), f - vec3(1.0, 1.0, 0.0)), u.x), u.y), 
+		mix(mix(dot(grad(i + ivec3(0, 0, 1)), f - vec3(0.0, 0.0, 1.0)),
+				dot(grad(i + ivec3(1, 0, 1)), f - vec3(1.0, 0.0, 1.0)), u.x),
+			mix(dot(grad(i + ivec3(0, 1, 1)), f - vec3(0.0, 1.0, 1.0)), 
+				dot(grad(i + ivec3(1, 1, 1)), f - vec3(1.0, 1.0, 1.0)), u.x), u.y), u.z);
+}
+
 const float minTravel = 0.000005;
 vec4 castVoxelRay(vec3 p, vec3 d) {
 	gradient = vec3(0.0);
@@ -283,7 +311,6 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 	if(!projectToRootVoxel(p, d, invD, travelDist)) return escapeColour(d);
 
 	vec4 col = vec4(0.0);
-	float weight = 0.0;
 	int reflections = 0;
 
 	int i = 0;
@@ -316,8 +343,9 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 					vec3 portalCol = voxel.averageColour.xyz;
 					portalCol = mix(portalCol, vec3(0.0), min(colTemp, tan(8.0*push.time - 12.0*(dot(s, d)))));
 
-					return scaleColor(i, vec4(phongLighting(portalCol, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0));
-					//return vec4(phongLighting(portalCol, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);
+					col += col + col + col + vec4(phongLighting(portalCol, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);
+
+					return scaleColor(i, col/col.w);
 				} else {
 					// Gravity-based raytracing
 					vec3 c = p - scale*s;
@@ -332,31 +360,31 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 					}
 					vec3 q = c + scale*s;
 					travelDist += length(q - p);
+					invD = 1.0 / d;
 					p = q;
 				}
 			} else {
-				float borderOutline = pow(min(abs(s.x - s.y), min(abs(s.x - s.z), abs(s.y - s.z))), 0.15);
 				gradient = cubeNorm(s);
 				p += projectToOutsideDistance(s) * scale;
 
-				//col += col + col + col + scaleColor(i, vec4(phongLighting(voxel.averageColour.xyz, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0));	// voxel.averageColour
-				col += col + col + col + vec4(phongLighting(voxel.averageColour.xyz, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);	// voxel.averageColour
-				weight += weight + weight + weight + 1.0;
+				if(voxel.vtype == 3 && reflections < 2) {
+					reflections += 1;
+					d -= 2.0*dot(d, gradient)*gradient;
+					invD = 1.0 / d;
 
-				// if(voxel.vtype == 3 && reflections < 1) {
-				// 	reflections += 1;
-				// 	d -= 2.0*dot(d, gradient)*gradient;
-				// } else {
-					//return col/weight;
-					return scaleColor(i, vec4(borderOutline*phongLighting(col.xyz/weight, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0));
-				// }
+					float mirrorFuzz = 0.015*gradient_noise(32.0 * s);
+					col += col + col + col + vec4(vec3(mirrorFuzz) + phongLighting(voxel.averageColour.xyz, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);
+				} else {
+					float borderOutline = pow(min(abs(s.x - s.y), min(abs(s.x - s.z), abs(s.y - s.z))), 0.15);
+					col += col + col + col + vec4(borderOutline*phongLighting(voxel.averageColour.xyz, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);
+
+					return scaleColor(i, col/col.w);
+				}
 			}
 		}
 	} while(++i < maxIterations && insideCube(p));
 	col += col + col + col + escapeColour(d);
-	weight += weight + weight + weight + 1.0;
-	//return col/weight;
-	return scaleColor(i, col/weight);
+	return scaleColor(i, col/col.w);
 }
 
 const float fov = (pi/1.75) / 2.0;
