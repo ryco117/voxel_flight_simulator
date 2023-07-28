@@ -22,7 +22,7 @@ struct Voxel {
 	uint btr;
 	uint bbl;
 	uint bbr;
-	uint flags;
+	uint vtype;
 };
 const uint emptyVoxel = 0xFFFFFFFF;
 
@@ -202,7 +202,7 @@ uint voxelIndex(inout vec3 p, inout float scale, int maxDepth) {
 			}
 		}
 		p += p;
-	} while(++i < maxDepth && voxelOctree.voxels[index].flags == 0);
+	} while(++i < maxDepth && voxelOctree.voxels[index].vtype == 0);
 	return index;
 }
 
@@ -235,7 +235,7 @@ float castShadowRay(vec3 p, vec3 d, vec3 invD, int maxDepth) {
 			travelDist += t;
 		} else {
 			Voxel voxel = voxelOctree.voxels[index];
-			if(voxel.flags == 2) {
+			if(voxel.vtype == 2) {
 				// We are in a goal voxel! Traverse and check for hit
 				float t = goalVoxelTraversal(s, d);
 				if(t >= 0.0) {
@@ -300,10 +300,11 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 			travelDist += t;
 		} else {
 			Voxel voxel = voxelOctree.voxels[index];
-			if(voxel.flags == 2) {
+			if(voxel.vtype == 2) {
 				// We are in a goal voxel! Traverse and check for hit
 				float t = goalVoxelTraversal(s, d);
-				if(t >= 0.0) {
+				float r2 = dot(s, s);
+				if(t >= 0.0 || r2 < goalRadiusSquared) {
 					t *= scale;
 					p += t * d;
 					travelDist += t;
@@ -318,19 +319,14 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 					return scaleColor(i, vec4(phongLighting(portalCol, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0));
 					//return vec4(phongLighting(portalCol, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);
 				} else {
-					// Copy pasta empty cell
-					// t = escapeCubeDistance(s, d, invD) * scale;
-					// p += t * d;
-					// travelDist += t;
-
 					// Gravity-based raytracing
 					vec3 c = p - scale*s;
 					for(int j = 0; j < maxIterations; ++j) {
-						float r2 = dot(s, s);
+						r2 = dot(s, s);
 						if(!insideCube(s) || r2 < goalRadiusSquared) {
 							break;
 						}
-						d += 0.025 * s / (r2*sqrt(r2));
+						d += 0.024 * s / (r2*sqrt(r2));
 						d = normalize(d);
 						s += d * 0.075;
 					}
@@ -347,7 +343,7 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 				col += col + col + col + vec4(phongLighting(voxel.averageColour.xyz, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);	// voxel.averageColour
 				weight += weight + weight + weight + 1.0;
 
-				// if(voxel.flags == 3 && reflections < 1) {
+				// if(voxel.vtype == 3 && reflections < 1) {
 				// 	reflections += 1;
 				// 	d -= 2.0*dot(d, gradient)*gradient;
 				// } else {

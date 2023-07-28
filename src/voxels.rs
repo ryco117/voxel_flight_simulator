@@ -2,10 +2,19 @@ use bytemuck::{Pod, Zeroable};
 use cgmath::{InnerSpace, Vector3, Vector4, Zero};
 use rand::distributions::{Distribution, Uniform};
 
+// The types of reference that a voxel can have to its child voxels.
 enum GraphRef {
     Ref(Box<Voxel>),
     Recurse(u32),
     Empty,
+}
+
+// The types of voxels that can be used.
+enum VoxelType {
+    Complex = 0,
+    Colour,
+    Portal,
+    Mirror,
 }
 
 struct Voxel {
@@ -18,7 +27,7 @@ struct Voxel {
     pub node_btr: GraphRef, // Back-Top-Right
     pub node_bbl: GraphRef, // Back-Bottom-Left
     pub node_bbr: GraphRef, // Back-Bottom-Right
-    pub flags: u32,
+    pub vtype: VoxelType,
     pub id: u32,
 }
 
@@ -46,7 +55,7 @@ const LEAF_VOXEL: Voxel = Voxel {
     node_btr: GraphRef::Recurse(0),
     node_bbl: GraphRef::Recurse(0),
     node_bbr: GraphRef::Recurse(0),
-    flags: 1,
+    vtype: VoxelType::Colour,
     id: NULL_VOXEL_INDEX,
 };
 
@@ -170,7 +179,7 @@ fn compact_octree_from_root(root_voxel: Voxel, voxel_count: u32) -> Vec<VoxelCom
             btr,
             bbl,
             bbr,
-            voxel.flags,
+            voxel.vtype as u32,
         );
         *acc.get_mut(self_index as usize).unwrap() = compact_voxel;
 
@@ -241,18 +250,18 @@ pub fn generate_recursive_voxel_octree(
                     id,
                     ..LEAF_VOXEL
                 }
-            } else if r > 0.0875 {
+            } else if r > 0.085 {
                 stats.goal_count += 1;
                 Voxel {
                     average_colour: colour,
-                    flags: 2, // TODO: Create a proper enum type for flags.
+                    vtype: VoxelType::Portal,
                     id,
                     ..LEAF_VOXEL
                 }
             } else {
                 Voxel {
                     average_colour: colour,
-                    flags: 3, // TODO: Create a proper enum type for flags.
+                    vtype: VoxelType::Mirror,
                     id,
                     ..LEAF_VOXEL
                 }
@@ -267,7 +276,7 @@ pub fn generate_recursive_voxel_octree(
             } else {
                 Voxel {
                     average_colour: colour,
-                    flags: 3, // TODO: Create a proper enum type for flags.
+                    vtype: VoxelType::Mirror,
                     id,
                     ..LEAF_VOXEL
                 }
@@ -334,7 +343,7 @@ pub fn generate_recursive_voxel_octree(
             node_btr: btr,
             node_bbl: bbl,
             node_bbr: bbr,
-            flags: 0,
+            vtype: VoxelType::Complex,
             id: stats.voxel_count,
         }
     }

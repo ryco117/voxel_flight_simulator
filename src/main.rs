@@ -2,6 +2,7 @@ use std::{sync::Arc, time::Instant};
 
 use cgmath::{Quaternion, Rad, Rotation, Rotation3, Vector3};
 use egui_winit_vulkano::{Gui, GuiConfig};
+use gilrs::Gilrs;
 use helens::Allocators;
 use voxels::VoxelCompact;
 use vulkano::{
@@ -25,10 +26,12 @@ mod voxels;
 
 const TITLE: &str = "voxel_flight_simulator";
 
+const SHOW_OVERLAY_AT_LAUNCH: bool = false;
+
 const DEFAULT_CAMERA_POSITION: Vector3<f32> = Vector3::new(0.01, 0.2, -2.);
 const DEFAULT_CAMERA_ORIENTATION: Quaternion<f32> = Quaternion::new(1., 0., 0., 0.);
 const DEFAULT_CAMERA_SPEED: f32 = 0.175;
-const CAMERA_BOOST_FACTOR: f32 = 3.;
+const CAMERA_BOOST_FACTOR: f32 = 3.5;
 
 struct App {
     pub app_start_time: Instant,
@@ -50,6 +53,8 @@ struct GameState {
     pub camera_position: Vector3<f32>,
     pub camera_quaternion: Quaternion<f32>,
     pub camera_speed: f32,
+    pub gamepad_state: GamepadState,
+    pub gilrs: Gilrs,
     pub key_state: KeyState,
     pub points: u32,
     pub waiting_for_input: bool,
@@ -62,6 +67,13 @@ struct KeyState {
     pub left: bool,
     pub right: bool,
     pub space: bool,
+}
+
+#[derive(Copy, Clone, Default)]
+struct GamepadState {
+    pub left_stick: [f32; 2],
+    pub yaw: f32,
+    pub south_button: bool,
 }
 
 fn main() {
@@ -79,10 +91,7 @@ fn main() {
                 // Update Egui integration so the UI works!
                 let _pass_events_to_game = !app.overlay.gui.update(&event);
                 match event {
-                    WindowEvent::Resized(_) => {
-                        app.window_manager.get_primary_renderer_mut().unwrap().resize();
-                    }
-                    WindowEvent::ScaleFactorChanged { .. } => {
+                    WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                         app.window_manager.get_primary_renderer_mut().unwrap().resize();
                     }
                     WindowEvent::CloseRequested => {
@@ -126,6 +135,9 @@ fn main() {
                         VirtualKeyCode::O => {
                             // Toggle overlay visibility.
                             app.overlay.is_visible = !app.overlay.is_visible;
+
+                            // Only show the cursor when the overlay is visible.
+                            app.window_manager.get_primary_window().unwrap().set_cursor_visible(app.overlay.is_visible);
                         }
 
                         // Camera controls
@@ -191,6 +203,9 @@ fn main() {
                 .as_secs_f32();
                 app.last_draw_time = Some(Instant::now());
 
+                // Update gamepad state.
+                app.game_state.waiting_for_input &= !update_controller_inputs(&mut app.game_state.gilrs, &mut app.game_state.gamepad_state);
+
                 if app.game_state.waiting_for_input {
                     // Apply demo camera controls until we get input.
                     const DEMO_SPEED: f32 = 0.05;
@@ -207,8 +222,15 @@ fn main() {
                     );
                     match intersection {
                         Intersection::Empty(scale) => {
+                            const SMOOTHING_INCREASE_FACTOR: f32 = -0.125;
+                            const SMOOTHING_DECREASE_FACTOR: f32 = -1.25;
+                            const SCALING_FACTOR: f32 = 0.7;
+                            const ROLL_SPEED: f32 = 2.;
+                            const PITCH_SPEED: f32 = 1.25;
+                            const YAW_SPEED: f32 = 0.5;
+
                             app.game_state.camera_position +=
-                                if app.game_state.key_state.space {
+                                if app.game_state.key_state.space || app.game_state.gamepad_state.south_button {
                                     CAMERA_BOOST_FACTOR
                                 } else {
                                     1.
@@ -219,9 +241,6 @@ fn main() {
                                 ));
 
                             // Use exponential smoothing to make the camera speed change with scale.
-                            const SMOOTHING_INCREASE_FACTOR: f32 = -0.125;
-                            const SMOOTHING_DECREASE_FACTOR: f32 = -0.9;
-                            const SCALING_FACTOR: f32 = 0.75;
                             let target_speed = DEFAULT_CAMERA_SPEED / scale.powf(SCALING_FACTOR);
                             let smooth = |factor: f32| 1. - (factor * delta_time).exp();
                             app.game_state.camera_speed += if target_speed > app.game_state.camera_speed {
@@ -230,18 +249,25 @@ fn main() {
                                 smooth(SMOOTHING_DECREASE_FACTOR)
                             } * (target_speed - app.game_state.camera_speed);
 
-                            let pitch = f32::from(app.game_state.key_state.up)
-                                - f32::from(app.game_state.key_state.down);
-                            const PITCH_SPEED: f32 = 1.25;
-                            let roll = f32::from(app.game_state.key_state.left)
-                                - f32::from(app.game_state.key_state.right);
-                            const ROLL_SPEED: f32 = 2.;
+                            let roll = (f32::from(app.game_state.key_state.left)
+                                - f32::from(app.game_state.key_state.right)
+                                - app.game_state.gamepad_state.left_stick[0]).clamp(-1., 1.);
+                            let pitch = (f32::from(app.game_state.key_state.up)
+                                - f32::from(app.game_state.key_state.down)
+                                + app.game_state.gamepad_state.left_stick[1]).clamp(-1., 1.);
+                            let yaw = app.game_state.gamepad_state.yaw;
+
                             app.game_state.camera_quaternion = app.game_state.camera_quaternion
                                 * Quaternion::from_angle_z(Rad(delta_time * ROLL_SPEED * roll))
-                                * Quaternion::from_angle_x(Rad(delta_time * PITCH_SPEED * pitch));
+                                * Quaternion::from_angle_x(Rad(delta_time * PITCH_SPEED * pitch))
+                                * Quaternion::from_angle_y(Rad(delta_time * YAW_SPEED * yaw));
                         }
                         Intersection::Collision => {
-                            app.game_state = GameState::default();
+                            app.game_state = GameState {
+                                gamepad_state: app.game_state.gamepad_state,
+                                key_state: app.game_state.key_state,
+                                ..GameState::default()
+                            };
                         }
                         Intersection::Portal(depth) => {
                             let points_gained =
@@ -336,6 +362,7 @@ impl App {
             &WindowDescriptor {
                 title: TITLE.to_string(),
                 present_mode: vulkano::swapchain::PresentMode::Mailbox,
+                cursor_visible: SHOW_OVERLAY_AT_LAUNCH,
                 ..WindowDescriptor::default()
             },
             |_| {},
@@ -362,7 +389,7 @@ impl App {
             );
             Overlay {
                 gui,
-                is_visible: false,
+                is_visible: SHOW_OVERLAY_AT_LAUNCH,
             }
         };
 
@@ -401,7 +428,7 @@ fn create_random_world(
     pipeline: &Arc<GraphicsPipeline>,
 ) -> (Arc<PersistentDescriptorSet>, Subbuffer<[VoxelCompact]>) {
     // Generate a random voxel-octree.
-    let (voxel_octree, stats) = voxels::generate_recursive_voxel_octree(256, 8);
+    let (voxel_octree, stats) = voxels::generate_recursive_voxel_octree(256, 10);
     println!(
         "Voxel Count: {:?}, Portal Count: {:?}",
         stats.voxel_count, stats.goal_count
@@ -435,12 +462,56 @@ fn create_random_world(
     )
 }
 
+fn update_controller_inputs(gilrs: &mut Gilrs, gamepad_state: &mut GamepadState) -> bool {
+    // Default to handling no events.
+    let mut processed = false;
+
+    // Process all queued events.
+    while let Some(event) = gilrs.next_event() {
+        use gilrs::ev::EventType;
+        match event.event {
+            EventType::AxisChanged(axis, val, _) => match axis {
+                gilrs::Axis::LeftStickX => {
+                    gamepad_state.left_stick[0] = val;
+                    processed = true;
+                }
+                gilrs::Axis::LeftStickY => {
+                    gamepad_state.left_stick[1] = val;
+                    processed = true;
+                }
+                a => {
+                    println!("Unhandled axis: {:?}", a);
+                    gamepad_state.yaw = val;
+                    processed = true;
+                }
+                _ => (),
+            },
+            EventType::ButtonPressed(gilrs::Button::South, _) => {
+                gamepad_state.south_button = true;
+                processed = true;
+            }
+            EventType::ButtonReleased(gilrs::Button::South, _) => {
+                gamepad_state.south_button = false;
+                processed = true;
+            }
+            EventType::ButtonChanged(gilrs::Button::RightTrigger2, val, _) => {
+                gamepad_state.yaw = val + val - 1.;
+                processed = true;
+            }
+            _ => (),
+        }
+    }
+    processed
+}
+
 impl GameState {
     pub fn default() -> Self {
         GameState {
             camera_position: DEFAULT_CAMERA_POSITION,
             camera_quaternion: DEFAULT_CAMERA_ORIENTATION,
             camera_speed: DEFAULT_CAMERA_SPEED,
+            gamepad_state: GamepadState::default(),
+            gilrs: Gilrs::new().unwrap(),
             key_state: KeyState::default(),
             points: 0,
             waiting_for_input: true,
