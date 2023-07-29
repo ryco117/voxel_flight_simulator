@@ -7,12 +7,14 @@ use helens::Allocators;
 use voxels::VoxelCompact;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
+    command_buffer::SecondaryAutoCommandBuffer,
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
     memory::allocator::{AllocationCreateInfo, MemoryUsage},
     pipeline::{GraphicsPipeline, Pipeline},
 };
 use vulkano_util::{
     context::{VulkanoConfig, VulkanoContext},
+    renderer::VulkanoWindowRenderer,
     window::{VulkanoWindows, WindowDescriptor},
 };
 use winit::{
@@ -37,7 +39,7 @@ struct App {
     pub app_start_time: Instant,
     pub descriptor_set: Arc<PersistentDescriptorSet>,
     pub engine: helens::Engine,
-    pub game_state: GameState,
+    pub game: GameState,
     pub last_draw_time: Option<Instant>,
     pub overlay: Overlay,
     pub voxel_buffer: Subbuffer<[VoxelCompact]>,
@@ -53,27 +55,36 @@ struct GameState {
     pub camera_position: Vector3<f32>,
     pub camera_quaternion: Quaternion<f32>,
     pub camera_speed: f32,
-    pub gamepad_state: GamepadState,
+    pub gamepad: GamepadState,
     pub gilrs: Gilrs,
-    pub key_state: KeyState,
+    pub keyboard: KeyboardState,
     pub points: u32,
     pub waiting_for_input: bool,
 }
 
 #[derive(Clone, Copy, Default)]
-struct KeyState {
+struct KeyboardState {
     pub up: bool,
     pub down: bool,
     pub left: bool,
     pub right: bool,
     pub space: bool,
+    pub a: bool,
+    pub d: bool,
+}
+
+#[derive(Clone, Copy)]
+enum SharedAxis {
+    Single(f32),
+    Split(f32, f32),
 }
 
 #[derive(Copy, Clone, Default)]
 struct GamepadState {
     pub left_stick: [f32; 2],
-    pub yaw: f32,
+    pub yaw: SharedAxis,
     pub south_button: bool,
+    pub joystick_mode: bool,
 }
 
 fn main() {
@@ -82,17 +93,24 @@ fn main() {
 
     // Run event loop until app exits.
     event_loop.run(move |event, _, control_flow| {
-        let window_size =  app.window_manager.get_primary_renderer().unwrap().window_size();
+        let window_size = app
+            .window_manager
+            .get_primary_renderer()
+            .unwrap()
+            .window_size();
         if window_size.contains(&0.0f32) {
             return;
         }
         match event {
             Event::WindowEvent { event, .. } => {
                 // Update Egui integration so the UI works!
-                let _pass_events_to_game = !app.overlay.gui.update(&event);
+                let pass_events_to_game = !app.overlay.gui.update(&event);
                 match event {
                     WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                        app.window_manager.get_primary_renderer_mut().unwrap().resize();
+                        app.window_manager
+                            .get_primary_renderer_mut()
+                            .unwrap()
+                            .resize();
                     }
                     WindowEvent::CloseRequested => {
                         *control_flow = ControlFlow::Exit;
@@ -100,96 +118,16 @@ fn main() {
                     WindowEvent::KeyboardInput {
                         input:
                             KeyboardInput {
-                                state: ElementState::Pressed,
+                                state,
                                 virtual_keycode: Some(keycode),
                                 ..
                             },
                         ..
-                    } => match keycode {
-                        VirtualKeyCode::Escape => {
-                            // If fullscreen then leave fullscreen, else exit the app.
-                            let window = app.window_manager.get_primary_window().unwrap();
-                            match window.fullscreen() {
-                                None => *control_flow = ControlFlow::Exit,
-                                Some(_) => {
-                                    window.set_fullscreen(None);
-                                }
-                            }
+                    } => {
+                        if pass_events_to_game {
+                            app.handle_keyboard_inputs(keycode, state, control_flow)
                         }
-                        VirtualKeyCode::F5 => {
-                            app.new_random_world();
-                            app.game_state = GameState::default();
-                        }
-                        VirtualKeyCode::F11 => {
-                            // Toggle fullscreen.
-                            let window = app.window_manager.get_primary_window().unwrap();
-                            match window.fullscreen() {
-                                None => {
-                                    window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-                                }
-                                Some(_) => {
-                                    window.set_fullscreen(None);
-                                }
-                            }
-                        }
-                        VirtualKeyCode::O => {
-                            // Toggle overlay visibility.
-                            app.overlay.is_visible = !app.overlay.is_visible;
-
-                            // Only show the cursor when the overlay is visible.
-                            app.window_manager.get_primary_window().unwrap().set_cursor_visible(app.overlay.is_visible);
-                        }
-
-                        // Camera controls
-                        VirtualKeyCode::Up => {
-                            app.game_state.key_state.up = true;
-                            app.game_state.waiting_for_input = false;
-                        }
-                        VirtualKeyCode::Down => {
-                            app.game_state.key_state.down = true;
-                            app.game_state.waiting_for_input = false;
-                        }
-                        VirtualKeyCode::Left => {
-                            app.game_state.key_state.left = true;
-                            app.game_state.waiting_for_input = false;
-                        }
-                        VirtualKeyCode::Right => {
-                            app.game_state.key_state.right = true;
-                            app.game_state.waiting_for_input = false;
-                        }
-                        VirtualKeyCode::Space => {
-                            app.game_state.key_state.space = true;
-                            app.game_state.waiting_for_input = false;
-                        }
-                        _ => (),
-                    },
-                    WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                state: ElementState::Released,
-                                virtual_keycode: Some(keycode),
-                                ..
-                            },
-                        ..
-                    } => match keycode {
-                        // Camera controls
-                        VirtualKeyCode::Up => {
-                            app.game_state.key_state.up = false;
-                        }
-                        VirtualKeyCode::Down => {
-                            app.game_state.key_state.down = false;
-                        }
-                        VirtualKeyCode::Left => {
-                            app.game_state.key_state.left = false;
-                        }
-                        VirtualKeyCode::Right => {
-                            app.game_state.key_state.right = false;
-                        }
-                        VirtualKeyCode::Space => {
-                            app.game_state.key_state.space = false;
-                        }
-                        _ => (),
-                    },
+                    }
                     _ => (),
                 }
             }
@@ -204,114 +142,16 @@ fn main() {
                 app.last_draw_time = Some(Instant::now());
 
                 // Update gamepad state.
-                app.game_state.waiting_for_input &= !update_controller_inputs(&mut app.game_state.gilrs, &mut app.game_state.gamepad_state, false);
+                app.game.waiting_for_input &=
+                    !handle_controller_inputs(&mut app.game.gilrs, &mut app.game.gamepad);
 
-                if app.game_state.waiting_for_input {
-                    // Apply demo camera controls until we get input.
-                    const DEMO_SPEED: f32 = 0.05;
-                    let demo_rotation = Quaternion::from_angle_y(Rad(delta_time * DEMO_SPEED));
-                    app.game_state.camera_position =
-                        demo_rotation.rotate_vector(app.game_state.camera_position);
-                    app.game_state.camera_quaternion =
-                        demo_rotation * app.game_state.camera_quaternion;
-                } else {
-                    use voxels::Intersection;
-                    let intersection = voxels::octree_scale_and_collision_of_point(
-                        app.game_state.camera_position,
-                        &app.voxel_buffer.read().unwrap(),
-                    );
-                    match intersection {
-                        Intersection::Empty(scale) => {
-                            const SMOOTHING_INCREASE_FACTOR: f32 = -0.125;
-                            const SMOOTHING_DECREASE_FACTOR: f32 = -1.25;
-                            const SCALING_FACTOR: f32 = 0.7;
-                            const ROLL_SPEED: f32 = 2.;
-                            const PITCH_SPEED: f32 = 1.25;
-                            const YAW_SPEED: f32 = 0.5;
-
-                            app.game_state.camera_position +=
-                                if app.game_state.key_state.space || app.game_state.gamepad_state.south_button {
-                                    CAMERA_BOOST_FACTOR
-                                } else {
-                                    1.
-                                } * app.game_state.camera_quaternion.rotate_vector(Vector3::new(
-                                    0.,
-                                    0.,
-                                    delta_time * app.game_state.camera_speed,
-                                ));
-
-                            // Use exponential smoothing to make the camera speed change with scale.
-                            let target_speed = DEFAULT_CAMERA_SPEED / scale.powf(SCALING_FACTOR);
-                            let smooth = |factor: f32| 1. - (factor * delta_time).exp();
-                            app.game_state.camera_speed += if target_speed > app.game_state.camera_speed {
-                                smooth(SMOOTHING_INCREASE_FACTOR)
-                            } else {
-                                smooth(SMOOTHING_DECREASE_FACTOR)
-                            } * (target_speed - app.game_state.camera_speed);
-
-                            let roll = (f32::from(app.game_state.key_state.left)
-                                - f32::from(app.game_state.key_state.right)
-                                - app.game_state.gamepad_state.left_stick[0]).clamp(-1., 1.);
-                            let pitch = (f32::from(app.game_state.key_state.up)
-                                - f32::from(app.game_state.key_state.down)
-                                + app.game_state.gamepad_state.left_stick[1]).clamp(-1., 1.);
-                            let yaw = app.game_state.gamepad_state.yaw;
-
-                            app.game_state.camera_quaternion = app.game_state.camera_quaternion
-                                * Quaternion::from_angle_z(Rad(delta_time * ROLL_SPEED * roll))
-                                * Quaternion::from_angle_x(Rad(delta_time * PITCH_SPEED * pitch))
-                                * Quaternion::from_angle_y(Rad(delta_time * YAW_SPEED * yaw));
-                        }
-                        Intersection::Collision => {
-                            app.game_state = GameState {
-                                gamepad_state: app.game_state.gamepad_state,
-                                key_state: app.game_state.key_state,
-                                ..GameState::default()
-                            };
-                        }
-                        Intersection::Portal(depth) => {
-                            let points_gained =
-                                if depth == voxels::MAXIMUM_GOAL_DEPTH {
-                                    6
-                                } else {
-                                    0
-                                } + depth + 1 - voxels::MINIMUM_GOAL_DEPTH;
-                            let new_points = app.game_state.points + points_gained;
-                            // TODO: Write each run to a file.
-                            println!(
-                                "{:?}: Portal depth: {depth}, +{points_gained}, Score: {new_points}\n",
-                                app.app_start_time.elapsed(),
-                            );
-
-                            app.new_random_world();
-
-                            app.game_state = GameState {
-                                key_state: app.game_state.key_state,
-                                points: new_points,
-                                waiting_for_input: false,
-                                ..GameState::default()
-                            };
-                        }
-                    };
-                }
-                let renderer = app.window_manager.get_primary_renderer_mut().unwrap();
+                // Update camera state.
+                app.update_camera_state(delta_time);
 
                 // Get secondary command buffer for rendering GUI.
-                let gui_command_buffer = if app.overlay.is_visible {
-                    // Update GUI state.
-                    app.overlay.gui.immediate_ui(|gui| {
-                        let ctx = gui.context();
-                        egui::Window::new("App GUI").show(&ctx, |_| {});
-                    });
-
-                    Some(
-                        app.overlay
-                            .gui
-                            .draw_on_subpass_image(renderer.swapchain_image_size()),
-                    )
-                } else {
-                    None
-                };
+                let renderer = app.window_manager.get_primary_renderer_mut().unwrap();
+                let gui_command_buffer =
+                    create_updated_overlay(&mut app.overlay, &mut app.game, renderer);
 
                 // Render main app with overlay from GUI.
                 let push_constants = {
@@ -323,8 +163,8 @@ fn main() {
                     helens::ray_march_voxels_fs::Push {
                         aspect_ratio: window_size[0] / window_size[1],
                         time,
-                        camera_position: app.game_state.camera_position.into(),
-                        camera_quaternion: app.game_state.camera_quaternion.into(),
+                        camera_position: app.game.camera_position.into(),
+                        camera_quaternion: app.game.camera_quaternion.into(),
                         light_dir: light_dir(time).into(),
                     }
                 };
@@ -339,7 +179,11 @@ fn main() {
                 renderer.present(after_future, true);
             }
             Event::MainEventsCleared => {
-                app.window_manager.get_primary_renderer().unwrap().window().request_redraw();
+                app.window_manager
+                    .get_primary_renderer()
+                    .unwrap()
+                    .window()
+                    .request_redraw();
             }
             _ => (),
         }
@@ -406,7 +250,7 @@ impl App {
                 app_start_time: Instant::now(),
                 descriptor_set,
                 engine,
-                game_state,
+                game: game_state,
                 last_draw_time: None,
                 overlay,
                 voxel_buffer,
@@ -420,6 +264,207 @@ impl App {
             create_random_world(self.engine.allocators(), self.engine.pipeline());
         self.descriptor_set = descriptor_set;
         self.voxel_buffer = voxel_buffer;
+    }
+
+    fn handle_keyboard_inputs(
+        &mut self,
+        keycode: VirtualKeyCode,
+        state: ElementState,
+        control_flow: &mut ControlFlow,
+    ) {
+        match state {
+            ElementState::Pressed => match keycode {
+                VirtualKeyCode::Escape => {
+                    // If fullscreen then leave fullscreen, else exit the app.
+                    let window = self.window_manager.get_primary_window().unwrap();
+                    match window.fullscreen() {
+                        None => *control_flow = ControlFlow::Exit,
+                        Some(_) => {
+                            window.set_fullscreen(None);
+                        }
+                    }
+                }
+                VirtualKeyCode::F5 => {
+                    self.new_random_world();
+                    self.game = GameState::default();
+                }
+                VirtualKeyCode::F11 => {
+                    // Toggle fullscreen.
+                    let window = self.window_manager.get_primary_window().unwrap();
+                    match window.fullscreen() {
+                        None => {
+                            window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                        }
+                        Some(_) => {
+                            window.set_fullscreen(None);
+                        }
+                    }
+                }
+                VirtualKeyCode::O => {
+                    // Toggle overlay visibility.
+                    self.overlay.is_visible = !self.overlay.is_visible;
+
+                    // Only show the cursor when the overlay is visible.
+                    self.window_manager
+                        .get_primary_window()
+                        .unwrap()
+                        .set_cursor_visible(self.overlay.is_visible);
+                }
+
+                // Camera controls.
+                VirtualKeyCode::Up => {
+                    self.game.keyboard.up = true;
+                    self.game.waiting_for_input = false;
+                }
+                VirtualKeyCode::Down => {
+                    self.game.keyboard.down = true;
+                    self.game.waiting_for_input = false;
+                }
+                VirtualKeyCode::Left => {
+                    self.game.keyboard.left = true;
+                    self.game.waiting_for_input = false;
+                }
+                VirtualKeyCode::Right => {
+                    self.game.keyboard.right = true;
+                    self.game.waiting_for_input = false;
+                }
+                VirtualKeyCode::Space => {
+                    self.game.keyboard.space = true;
+                    self.game.waiting_for_input = false;
+                }
+                VirtualKeyCode::A => {
+                    self.game.keyboard.a = true;
+                    self.game.waiting_for_input = false;
+                }
+                VirtualKeyCode::D => {
+                    self.game.keyboard.d = true;
+                    self.game.waiting_for_input = false;
+                }
+                _ => (),
+            },
+            ElementState::Released => match keycode {
+                // Camera controls.
+                VirtualKeyCode::Up => {
+                    self.game.keyboard.up = false;
+                }
+                VirtualKeyCode::Down => {
+                    self.game.keyboard.down = false;
+                }
+                VirtualKeyCode::Left => {
+                    self.game.keyboard.left = false;
+                }
+                VirtualKeyCode::Right => {
+                    self.game.keyboard.right = false;
+                }
+                VirtualKeyCode::Space => {
+                    self.game.keyboard.space = false;
+                }
+                VirtualKeyCode::A => {
+                    self.game.keyboard.a = false;
+                }
+                VirtualKeyCode::D => {
+                    self.game.keyboard.d = false;
+                }
+                _ => (),
+            },
+        }
+    }
+
+    fn update_camera_state(&mut self, delta_time: f32) {
+        if self.game.waiting_for_input {
+            // Apply demo camera controls until we get input.
+            const DEMO_SPEED: f32 = 0.05;
+            let demo_rotation = Quaternion::from_angle_y(Rad(delta_time * DEMO_SPEED));
+            self.game.camera_position = demo_rotation.rotate_vector(self.game.camera_position);
+            self.game.camera_quaternion = demo_rotation * self.game.camera_quaternion;
+        } else {
+            use voxels::Intersection;
+            let intersection = voxels::octree_scale_and_collision_of_point(
+                self.game.camera_position,
+                &self.voxel_buffer.read().unwrap(),
+            );
+            match intersection {
+                Intersection::Empty(scale) => {
+                    const SMOOTHING_INCREASE_FACTOR: f32 = -0.125;
+                    const SMOOTHING_DECREASE_FACTOR: f32 = -1.35;
+                    const SCALING_FACTOR: f32 = 0.7;
+                    const ROLL_SPEED: f32 = 2.;
+                    const PITCH_SPEED: f32 = 1.25;
+                    const YAW_SPEED: f32 = 0.5;
+
+                    self.game.camera_position += if self.game.keyboard.space
+                        || self.game.gamepad.south_button
+                    {
+                        CAMERA_BOOST_FACTOR
+                    } else {
+                        1.
+                    } * self
+                        .game
+                        .camera_quaternion
+                        .rotate_vector(Vector3::new(0., 0., delta_time * self.game.camera_speed));
+
+                    // Use exponential smoothing to make the camera speed change with scale.
+                    let target_speed = DEFAULT_CAMERA_SPEED / scale.powf(SCALING_FACTOR);
+                    let smooth = |factor: f32| 1. - (factor * delta_time).exp();
+                    self.game.camera_speed += if target_speed > self.game.camera_speed {
+                        smooth(SMOOTHING_INCREASE_FACTOR)
+                    } else {
+                        smooth(SMOOTHING_DECREASE_FACTOR)
+                    } * (target_speed - self.game.camera_speed);
+
+                    let roll = (f32::from(self.game.keyboard.left)
+                        - f32::from(self.game.keyboard.right)
+                        - self.game.gamepad.left_stick[0])
+                        .clamp(-1., 1.);
+                    let pitch = (f32::from(self.game.keyboard.up)
+                        - f32::from(self.game.keyboard.down)
+                        + self.game.gamepad.left_stick[1])
+                        .clamp(-1., 1.);
+                    let yaw = (f32::from(self.game.keyboard.d) - f32::from(self.game.keyboard.a)
+                        + match self.game.gamepad.yaw {
+                            SharedAxis::Single(value) => value,
+                            SharedAxis::Split(left, right) => right - left,
+                        })
+                    .clamp(-1., 1.);
+
+                    self.game.camera_quaternion = self.game.camera_quaternion
+                        * Quaternion::from_angle_z(Rad(delta_time * ROLL_SPEED * roll))
+                        * Quaternion::from_angle_x(Rad(delta_time * PITCH_SPEED * pitch))
+                        * Quaternion::from_angle_y(Rad(delta_time * YAW_SPEED * yaw));
+                }
+                Intersection::Collision => {
+                    self.game = GameState {
+                        gamepad: self.game.gamepad,
+                        keyboard: self.game.keyboard,
+                        ..GameState::default()
+                    };
+                }
+                Intersection::Portal(depth) => {
+                    let points_gained = if depth == voxels::MAXIMUM_GOAL_DEPTH {
+                        6
+                    } else {
+                        0
+                    } + depth
+                        + 1
+                        - voxels::MINIMUM_GOAL_DEPTH;
+                    let new_points = self.game.points + points_gained;
+                    // TODO: Write each run to a file.
+                    println!(
+                        "{:?}: Portal depth: {depth}, +{points_gained}, Score: {new_points}\n",
+                        self.app_start_time.elapsed(),
+                    );
+
+                    self.new_random_world();
+
+                    self.game = GameState {
+                        keyboard: self.game.keyboard,
+                        points: new_points,
+                        waiting_for_input: false,
+                        ..GameState::default()
+                    };
+                }
+            };
+        }
     }
 }
 
@@ -462,7 +507,7 @@ fn create_random_world(
     )
 }
 
-fn update_controller_inputs(gilrs: &mut Gilrs, gamepad_state: &mut GamepadState, joystick_mode: bool) -> bool {
+fn handle_controller_inputs(gilrs: &mut Gilrs, gamepad: &mut GamepadState) -> bool {
     // Default to handling no events.
     let mut processed = false;
 
@@ -471,36 +516,63 @@ fn update_controller_inputs(gilrs: &mut Gilrs, gamepad_state: &mut GamepadState,
         gilrs.gamepad(event.id).name();
 
         use gilrs::ev::EventType;
+        use SharedAxis::{Single, Split};
         match event.event {
             EventType::AxisChanged(axis, val, _) => match axis {
                 gilrs::Axis::LeftStickX => {
-                    gamepad_state.left_stick[0] = val;
+                    gamepad.left_stick[0] = val;
                     processed = true;
                 }
                 gilrs::Axis::LeftStickY => {
-                    gamepad_state.left_stick[1] = val;
+                    gamepad.left_stick[1] = val;
                     processed = true;
                 }
                 _ => (),
-            }
+            },
             EventType::ButtonPressed(gilrs::Button::South, _) => {
-                gamepad_state.south_button = true;
+                gamepad.south_button = true;
                 processed = true;
             }
             EventType::ButtonReleased(gilrs::Button::South, _) => {
-                gamepad_state.south_button = false;
+                gamepad.south_button = false;
                 processed = true;
             }
-            EventType::ButtonChanged(gilrs::Button::RightTrigger2, val, _) if joystick_mode => {
-                gamepad_state.yaw = val + val - 1.;
+            EventType::ButtonChanged(gilrs::Button::RightTrigger2, val, _)
+                if gamepad.joystick_mode =>
+            {
+                gamepad.yaw = Single(val + val - 1.);
                 processed = true;
             }
-            EventType::ButtonChanged(gilrs::Button::RightTrigger, val, _) if !joystick_mode => {
-                gamepad_state.yaw = val;
+            EventType::ButtonPressed(gilrs::Button::LeftTrigger, _) if !gamepad.joystick_mode => {
+                gamepad.yaw = if let Split(_, right) = gamepad.yaw {
+                    Split(1., right)
+                } else {
+                    Split(1., 0.)
+                };
                 processed = true;
             }
-            EventType::ButtonChanged(gilrs::Button::LeftTrigger, val, _) if !joystick_mode => {
-                gamepad_state.yaw = -val;
+            EventType::ButtonReleased(gilrs::Button::LeftTrigger, _) if !gamepad.joystick_mode => {
+                gamepad.yaw = if let Split(_, right) = gamepad.yaw {
+                    Split(0., right)
+                } else {
+                    Split(0., 0.)
+                };
+                processed = true;
+            }
+            EventType::ButtonPressed(gilrs::Button::RightTrigger, _) if !gamepad.joystick_mode => {
+                gamepad.yaw = if let Split(left, _) = gamepad.yaw {
+                    Split(left, 1.)
+                } else {
+                    Split(0., 1.)
+                };
+                processed = true;
+            }
+            EventType::ButtonReleased(gilrs::Button::RightTrigger, _) if !gamepad.joystick_mode => {
+                gamepad.yaw = if let Split(left, _) = gamepad.yaw {
+                    Split(left, 0.)
+                } else {
+                    Split(0., 0.)
+                };
                 processed = true;
             }
             _ => (),
@@ -509,17 +581,47 @@ fn update_controller_inputs(gilrs: &mut Gilrs, gamepad_state: &mut GamepadState,
     processed
 }
 
+fn create_updated_overlay(
+    overlay: &mut Overlay,
+    game: &mut GameState,
+    renderer: &mut VulkanoWindowRenderer,
+) -> Option<SecondaryAutoCommandBuffer> {
+    if overlay.is_visible {
+        // Update GUI state.
+        overlay.gui.immediate_ui(|gui| {
+            let ctx = gui.context();
+            egui::Window::new("App GUI").show(&ctx, |ui| {
+                ui.checkbox(&mut game.gamepad.joystick_mode, "Treat gamepad as joystick");
+            });
+        });
+
+        Some(
+            overlay
+                .gui
+                .draw_on_subpass_image(renderer.swapchain_image_size()),
+        )
+    } else {
+        None
+    }
+}
+
 impl GameState {
     pub fn default() -> Self {
         GameState {
             camera_position: DEFAULT_CAMERA_POSITION,
             camera_quaternion: DEFAULT_CAMERA_ORIENTATION,
             camera_speed: DEFAULT_CAMERA_SPEED,
-            gamepad_state: GamepadState::default(),
+            gamepad: GamepadState::default(),
             gilrs: Gilrs::new().unwrap(),
-            key_state: KeyState::default(),
+            keyboard: KeyboardState::default(),
             points: 0,
             waiting_for_input: true,
         }
+    }
+}
+
+impl Default for SharedAxis {
+    fn default() -> Self {
+        SharedAxis::Single(0.)
     }
 }

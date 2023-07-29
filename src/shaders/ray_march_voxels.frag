@@ -96,7 +96,7 @@ bool insideCube(vec3 t) {
 	return t.x <= 1.0 && t.y <= 1.0 && t.z <= 1.0;
 }
 
-bool projectToRootVoxel(inout vec3 p, vec3 d, vec3 invD, inout float travelDist) {
+bool projectToRootVoxel(inout vec3 p, vec3 d, vec3 invD) {
 	if(insideCube(p)) return true;
 
 	vec3 s;
@@ -107,7 +107,6 @@ bool projectToRootVoxel(inout vec3 p, vec3 d, vec3 invD, inout float travelDist)
 			s = p + t*d;
 			if(abs(s.y) <= 1.0 && abs(s.z) <= 1.0) {
 				p = s;
-				travelDist += t;
 				return true;
 			}
 		}
@@ -118,7 +117,6 @@ bool projectToRootVoxel(inout vec3 p, vec3 d, vec3 invD, inout float travelDist)
 			s = p + t*d;
 			if(abs(s.x) <= 1.0 && abs(s.z) <= 1.0) {
 				p = s;
-				travelDist += t;
 				return true;
 			}
 		}
@@ -129,7 +127,6 @@ bool projectToRootVoxel(inout vec3 p, vec3 d, vec3 invD, inout float travelDist)
 			s = p + t*d;
 			if(abs(s.y) <= 1.0 && abs(s.x) <= 1.0) {
 				p = s;
-				travelDist += t;
 				return true;
 			}
 		}
@@ -218,8 +215,7 @@ float goalVoxelTraversal(inout vec3 p, vec3 d) {
 }
 
 float castShadowRay(vec3 p, vec3 d, vec3 invD, int maxDepth) {
-	float travelDist = 0.0;
-	if(!projectToRootVoxel(p, d, invD, travelDist)) return 1.0;
+	if(!projectToRootVoxel(p, d, invD)) return 1.0;
 
 	int i = 0;
 	do {
@@ -231,7 +227,6 @@ float castShadowRay(vec3 p, vec3 d, vec3 invD, int maxDepth) {
 		if(index == emptyVoxel) {
 			float t = escapeCubeDistance(s, d, invD) * scale;
 			p += t * d;
-			travelDist += t;
 		} else {
 			Voxel voxel = voxelOctree.voxels[index];
 			if(voxel.vtype == 2) {
@@ -243,7 +238,6 @@ float castShadowRay(vec3 p, vec3 d, vec3 invD, int maxDepth) {
 					// Copy pasta empty cell
 					t = escapeCubeDistance(s, d, invD) * scale;
 					p += t * d;
-					travelDist += t;
 				}
 			} else {
 				return 0.0;
@@ -304,11 +298,16 @@ float gradient_noise(vec3 p) {
 
 const float minTravel = 0.000005;
 vec4 castVoxelRay(vec3 p, vec3 d) {
+	// Remember source position of cast
+	vec3 origin = p;
+
+	// Reset gradient
 	gradient = vec3(0.0);
+
+	// Move some non-zero distance
 	p += minTravel * d;
-	float travelDist = minTravel;
 	vec3 invD = 1.0 / d;
-	if(!projectToRootVoxel(p, d, invD, travelDist)) return escapeColour(d);
+	if(!projectToRootVoxel(p, d, invD)) return escapeColour(d);
 
 	vec4 col = vec4(0.0);
 	int reflections = 0;
@@ -317,14 +316,13 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 	do {
 		vec3 s = p;
 		float scale = 1.0;
-		int maxDepth = clamp(int(9.85 - 1.4427*log(travelDist)), 3, globalMaxDepth);
+		int maxDepth = clamp(int(9.85 - 1.4427*log(length(p - origin))), 3, globalMaxDepth);
 		uint index = voxelIndex(s, scale, maxDepth);
 
 		// Is empty or filled?
 		if(index == emptyVoxel) {
 			float t = escapeCubeDistance(s, d, invD) * scale;
 			p += t * d;
-			travelDist += t;
 		} else {
 			Voxel voxel = voxelOctree.voxels[index];
 			if(voxel.vtype == 2) {
@@ -334,7 +332,6 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 				if(t >= 0.0 || r2 < goalRadiusSquared) {
 					t *= scale;
 					p += t * d;
-					travelDist += t;
 					gradient = normalize(s);
 
 					float colTemp = sin(7.0*push.time + 1.25*s.x + 1.5*s.y - 1.5*s.z);
@@ -359,7 +356,6 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 						s += d * 0.075;
 					}
 					vec3 q = c + scale*s;
-					travelDist += length(q - p);
 					invD = 1.0 / d;
 					p = q;
 				}
@@ -367,15 +363,16 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 				gradient = cubeNorm(s);
 				p += projectToOutsideDistance(s) * scale;
 
-				if(voxel.vtype == 3 && reflections < 2) {
+				if(voxel.vtype == 3 && reflections < 3) {
 					reflections += 1;
 					d -= 2.0*dot(d, gradient)*gradient;
 					invD = 1.0 / d;
 
-					float mirrorFuzz = 0.015*gradient_noise(32.0 * s);
+					float mirrorFuzz = 0.03*gradient_noise(64.0 * s);
 					col += col + col + col + vec4(vec3(mirrorFuzz) + phongLighting(voxel.averageColour.xyz, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);
 				} else {
-					float borderOutline = pow(min(abs(s.x - s.y), min(abs(s.x - s.z), abs(s.y - s.z))), 0.15);
+					vec3 t = abs(s);
+					float borderOutline = pow(min(abs(t.x - t.y), min(abs(t.x - t.z), abs(t.y - t.z))), 0.16);
 					col += col + col + col + vec4(borderOutline*phongLighting(voxel.averageColour.xyz, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);
 
 					return scaleColor(i, col/col.w);
