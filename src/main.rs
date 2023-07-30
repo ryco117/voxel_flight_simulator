@@ -28,7 +28,7 @@ mod voxels;
 
 const TITLE: &str = "voxel_flight_simulator";
 
-const SHOW_OVERLAY_AT_LAUNCH: bool = false;
+const SHOW_OVERLAY_AT_LAUNCH: bool = true;
 
 const DEFAULT_CAMERA_POSITION: Vector3<f32> = Vector3::new(0.01, 0.2, -2.);
 const DEFAULT_CAMERA_ORIENTATION: Quaternion<f32> = Quaternion::new(1., 0., 0., 0.);
@@ -49,8 +49,10 @@ struct App {
 struct Overlay {
     pub gui: Gui,
     pub is_visible: bool,
+    pub last_cursor_movement: Instant,
 }
 
+// TODO: Make waiting_for_input an enum to also track run start time.
 struct GameState {
     pub camera_position: Vector3<f32>,
     pub camera_quaternion: Quaternion<f32>,
@@ -125,14 +127,17 @@ fn main() {
                         ..
                     } => {
                         if pass_events_to_game {
-                            app.handle_keyboard_inputs(keycode, state, control_flow)
+                            app.handle_keyboard_inputs(keycode, state, control_flow);
                         }
+                    }
+                    WindowEvent::CursorMoved { .. } => {
+                        app.overlay.last_cursor_movement = Instant::now();
                     }
                     _ => (),
                 }
             }
             Event::RedrawRequested(..) => {
-                // Update game state.
+                // Update frame-render timing.
                 let delta_time = if let Some(instant) = app.last_draw_time {
                     instant.elapsed()
                 } else {
@@ -140,6 +145,12 @@ fn main() {
                 }
                 .as_secs_f32();
                 app.last_draw_time = Some(Instant::now());
+
+                if let Some(window) = app.window_manager.get_primary_window() {
+                    window.set_cursor_visible(
+                        app.overlay.last_cursor_movement.elapsed().as_secs_f32() < 4.,
+                    );
+                }
 
                 // Update gamepad state.
                 app.game.waiting_for_input &=
@@ -234,6 +245,7 @@ impl App {
             Overlay {
                 gui,
                 is_visible: SHOW_OVERLAY_AT_LAUNCH,
+                last_cursor_movement: Instant::now(),
             }
         };
 
@@ -286,7 +298,8 @@ impl App {
                 }
                 VirtualKeyCode::F5 => {
                     self.new_random_world();
-                    self.game = GameState::default();
+                    self.game.points = 0;
+                    reset_camera(&mut self.game);
                 }
                 VirtualKeyCode::F11 => {
                     // Toggle fullscreen.
@@ -303,12 +316,6 @@ impl App {
                 VirtualKeyCode::O => {
                     // Toggle overlay visibility.
                     self.overlay.is_visible = !self.overlay.is_visible;
-
-                    // Only show the cursor when the overlay is visible.
-                    self.window_manager
-                        .get_primary_window()
-                        .unwrap()
-                        .set_cursor_visible(self.overlay.is_visible);
                 }
 
                 // Camera controls.
@@ -433,11 +440,9 @@ impl App {
                         * Quaternion::from_angle_y(Rad(delta_time * YAW_SPEED * yaw));
                 }
                 Intersection::Collision => {
-                    self.game = GameState {
-                        gamepad: self.game.gamepad,
-                        keyboard: self.game.keyboard,
-                        ..GameState::default()
-                    };
+                    reset_camera(&mut self.game);
+                    self.game.waiting_for_input = true;
+                    self.game.points = 0;
                 }
                 Intersection::Portal(depth) => {
                     let points_gained = if depth == voxels::MAXIMUM_GOAL_DEPTH {
@@ -447,21 +452,17 @@ impl App {
                     } + depth
                         + 1
                         - voxels::MINIMUM_GOAL_DEPTH;
-                    let new_points = self.game.points + points_gained;
+                    self.game.points += points_gained;
                     // TODO: Write each run to a file.
                     println!(
-                        "{:?}: Portal depth: {depth}, +{points_gained}, Score: {new_points}\n",
+                        "{:?}: Portal depth: {depth}, +{points_gained}, Score: {}\n",
                         self.app_start_time.elapsed(),
+                        self.game.points,
                     );
 
                     self.new_random_world();
 
-                    self.game = GameState {
-                        keyboard: self.game.keyboard,
-                        points: new_points,
-                        waiting_for_input: false,
-                        ..GameState::default()
-                    };
+                    reset_camera(&mut self.game);
                 }
             };
         }
@@ -513,8 +514,6 @@ fn handle_controller_inputs(gilrs: &mut Gilrs, gamepad: &mut GamepadState) -> bo
 
     // Process all queued events.
     while let Some(event) = gilrs.next_event() {
-        gilrs.gamepad(event.id).name();
-
         use gilrs::ev::EventType;
         use SharedAxis::{Single, Split};
         match event.event {
@@ -591,6 +590,10 @@ fn create_updated_overlay(
         overlay.gui.immediate_ui(|gui| {
             let ctx = gui.context();
             egui::Window::new("App GUI").show(&ctx, |ui| {
+                ui.heading(format!("Score: {}", game.points));
+                ui.separator();
+
+                ui.heading("Options");
                 ui.checkbox(&mut game.gamepad.joystick_mode, "Treat gamepad as joystick");
             });
         });
@@ -603,6 +606,12 @@ fn create_updated_overlay(
     } else {
         None
     }
+}
+
+fn reset_camera(game: &mut GameState) {
+    game.camera_position = DEFAULT_CAMERA_POSITION;
+    game.camera_quaternion = DEFAULT_CAMERA_ORIENTATION;
+    game.camera_speed = DEFAULT_CAMERA_SPEED;
 }
 
 impl GameState {

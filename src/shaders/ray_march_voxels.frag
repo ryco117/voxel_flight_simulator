@@ -368,7 +368,7 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 					d -= 2.0*dot(d, gradient)*gradient;
 					invD = 1.0 / d;
 
-					float mirrorFuzz = 0.03*gradient_noise(64.0 * s);
+					float mirrorFuzz = 0.035*gradient_noise(64.0 * s);
 					col += col + col + col + vec4(vec3(mirrorFuzz) + phongLighting(voxel.averageColour.xyz, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);
 				} else {
 					vec3 t = abs(s);

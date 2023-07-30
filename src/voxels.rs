@@ -287,6 +287,8 @@ pub fn generate_recursive_voxel_octree(
     // Get a random recursion depth from an exponential distribution.
     fn random_recurse(random: &mut RandomFloats, max_depth: u32) -> u32 {
         let roll = 1.0 - random.sample();
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         (roll.log(1.8).abs() as u32).min(max_depth)
     }
 
@@ -390,6 +392,7 @@ pub fn octree_scale_and_collision_of_point(
             } else if voxel.flags == 2 {
                 if p.dot(p) <= GOAL_RADIUS_SQUARED {
                     // Subtract 1 from depth since this function asserts the root as depth zero, others do not.
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     Intersection::Portal((scale.log2() - 1.).max(0.) as u32)
                 } else {
                     Intersection::Empty(scale)
