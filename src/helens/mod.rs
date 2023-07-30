@@ -217,15 +217,15 @@ impl AppPipeline {
         let fs = ray_march_voxels_fs::load(device.clone()).expect("failed to create shader module");
 
         let pipeline = GraphicsPipeline::start()
-            // A Vulkan shader may contain multiple entry points, so we specify which one
+            // A Vulkan shader may contain multiple entry points, so we specify which one.
             .vertex_shader(vs.entry_point("main").unwrap(), ())
-            // Indicate the type of the primitives (the default is a list of triangles)
+            // Indicate the type of the primitives (the default is a list of triangles).
             .input_assembly_state(
                 InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
             )
             .fragment_shader(fs.entry_point("main").unwrap(), ())
-            // Set a dynamic viewport
-            // TODO: Consider making this fixed since resizing is rare and requires recreating the swapchain anyway
+            // Set a dynamic viewport.
+            // TODO: Consider making this fixed since resizing is rare and requires recreating the swapchain anyway.
             .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
             .render_pass(subpass.clone())
             .build(device.clone())
@@ -303,26 +303,6 @@ void main() {
 }",
     }
 }
-
-// mod test_fs {
-//     vulkano_shaders::shader! {
-//         ty: "fragment",
-//         src: "
-// #version 450
-// layout (location = 0) in vec2 coord;
-// layout (location = 0) out vec4 fragColor;
-// void main() {
-//     fragColor = vec4(0.5*coord + vec2(0.5), 0.0, 1.0);
-// }",
-//     }
-// }
-
-// pub mod shadertoy_fs {
-//     vulkano_shaders::shader! {
-//         ty: "fragment",
-//         path: "src/shaders/shadertoy_Ms2SDc.frag",
-//     }
-// }
 
 pub mod ray_march_voxels_fs {
     vulkano_shaders::shader! {

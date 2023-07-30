@@ -52,7 +52,12 @@ struct Overlay {
     pub last_cursor_movement: Instant,
 }
 
-// TODO: Make waiting_for_input an enum to also track run start time.
+enum RunState {
+    NewGame,
+    Running(Instant),
+}
+
+// TODO: Make level/prtal-depth tracked as well as points.
 struct GameState {
     pub camera_position: Vector3<f32>,
     pub camera_quaternion: Quaternion<f32>,
@@ -61,7 +66,7 @@ struct GameState {
     pub gilrs: Gilrs,
     pub keyboard: KeyboardState,
     pub points: u32,
-    pub waiting_for_input: bool,
+    pub run: RunState,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -147,14 +152,15 @@ fn main() {
                 app.last_draw_time = Some(Instant::now());
 
                 if let Some(window) = app.window_manager.get_primary_window() {
+                    const CURSOR_WAIT_TO_HIDE_DURATION: f32 = 2.;
                     window.set_cursor_visible(
-                        app.overlay.last_cursor_movement.elapsed().as_secs_f32() < 4.,
+                        app.overlay.last_cursor_movement.elapsed().as_secs_f32()
+                            < CURSOR_WAIT_TO_HIDE_DURATION,
                     );
                 }
 
                 // Update gamepad state.
-                app.game.waiting_for_input &=
-                    !handle_controller_inputs(&mut app.game.gilrs, &mut app.game.gamepad);
+                app.handle_controller_inputs();
 
                 // Update camera state.
                 app.update_camera_state(delta_time);
@@ -284,6 +290,7 @@ impl App {
         state: ElementState,
         control_flow: &mut ControlFlow,
     ) {
+        let mut start_game = false;
         match state {
             ElementState::Pressed => match keycode {
                 VirtualKeyCode::Escape => {
@@ -321,31 +328,31 @@ impl App {
                 // Camera controls.
                 VirtualKeyCode::Up => {
                     self.game.keyboard.up = true;
-                    self.game.waiting_for_input = false;
+                    start_game = true;
                 }
                 VirtualKeyCode::Down => {
                     self.game.keyboard.down = true;
-                    self.game.waiting_for_input = false;
+                    start_game = true;
                 }
                 VirtualKeyCode::Left => {
                     self.game.keyboard.left = true;
-                    self.game.waiting_for_input = false;
+                    start_game = true;
                 }
                 VirtualKeyCode::Right => {
                     self.game.keyboard.right = true;
-                    self.game.waiting_for_input = false;
+                    start_game = true;
                 }
                 VirtualKeyCode::Space => {
                     self.game.keyboard.space = true;
-                    self.game.waiting_for_input = false;
+                    start_game = true;
                 }
                 VirtualKeyCode::A => {
                     self.game.keyboard.a = true;
-                    self.game.waiting_for_input = false;
+                    start_game = true;
                 }
                 VirtualKeyCode::D => {
                     self.game.keyboard.d = true;
-                    self.game.waiting_for_input = false;
+                    start_game = true;
                 }
                 _ => (),
             },
@@ -375,96 +382,184 @@ impl App {
                 _ => (),
             },
         }
+
+        // If we processed any events, we're no longer waiting for input.
+        self.game.run.ensure_running_if(start_game);
+    }
+
+    fn handle_controller_inputs(&mut self) {
+        // Default to handling no events.
+        let mut processed = false;
+
+        // Process all queued events.
+        while let Some(event) = self.game.gilrs.next_event() {
+            use gilrs::ev::EventType;
+            use SharedAxis::{Single, Split};
+            match event.event {
+                EventType::AxisChanged(axis, val, _) => match axis {
+                    gilrs::Axis::LeftStickX => {
+                        self.game.gamepad.left_stick[0] = val;
+                        processed = true;
+                    }
+                    gilrs::Axis::LeftStickY => {
+                        self.game.gamepad.left_stick[1] = val;
+                        processed = true;
+                    }
+                    _ => (),
+                },
+                EventType::ButtonPressed(gilrs::Button::South, _) => {
+                    self.game.gamepad.south_button = true;
+                    processed = true;
+                }
+                EventType::ButtonReleased(gilrs::Button::South, _) => {
+                    self.game.gamepad.south_button = false;
+                    processed = true;
+                }
+                EventType::ButtonChanged(gilrs::Button::RightTrigger2, val, _)
+                    if self.game.gamepad.joystick_mode =>
+                {
+                    self.game.gamepad.yaw = Single(val + val - 1.);
+                    processed = true;
+                }
+                EventType::ButtonPressed(gilrs::Button::LeftTrigger, _)
+                    if !self.game.gamepad.joystick_mode =>
+                {
+                    self.game.gamepad.yaw = if let Split(_, right) = self.game.gamepad.yaw {
+                        Split(1., right)
+                    } else {
+                        Split(1., 0.)
+                    };
+                    processed = true;
+                }
+                EventType::ButtonReleased(gilrs::Button::LeftTrigger, _)
+                    if !self.game.gamepad.joystick_mode =>
+                {
+                    self.game.gamepad.yaw = if let Split(_, right) = self.game.gamepad.yaw {
+                        Split(0., right)
+                    } else {
+                        Split(0., 0.)
+                    };
+                    processed = true;
+                }
+                EventType::ButtonPressed(gilrs::Button::RightTrigger, _)
+                    if !self.game.gamepad.joystick_mode =>
+                {
+                    self.game.gamepad.yaw = if let Split(left, _) = self.game.gamepad.yaw {
+                        Split(left, 1.)
+                    } else {
+                        Split(0., 1.)
+                    };
+                    processed = true;
+                }
+                EventType::ButtonReleased(gilrs::Button::RightTrigger, _)
+                    if !self.game.gamepad.joystick_mode =>
+                {
+                    self.game.gamepad.yaw = if let Split(left, _) = self.game.gamepad.yaw {
+                        Split(left, 0.)
+                    } else {
+                        Split(0., 0.)
+                    };
+                    processed = true;
+                }
+                _ => (),
+            }
+        }
+
+        // If we processed any events, we're no longer waiting for input.
+        self.game.run.ensure_running_if(processed);
     }
 
     fn update_camera_state(&mut self, delta_time: f32) {
-        if self.game.waiting_for_input {
-            // Apply demo camera controls until we get input.
-            const DEMO_SPEED: f32 = 0.05;
-            let demo_rotation = Quaternion::from_angle_y(Rad(delta_time * DEMO_SPEED));
-            self.game.camera_position = demo_rotation.rotate_vector(self.game.camera_position);
-            self.game.camera_quaternion = demo_rotation * self.game.camera_quaternion;
-        } else {
-            use voxels::Intersection;
-            let intersection = voxels::octree_scale_and_collision_of_point(
-                self.game.camera_position,
-                &self.voxel_buffer.read().unwrap(),
-            );
-            match intersection {
-                Intersection::Empty(scale) => {
-                    const SMOOTHING_INCREASE_FACTOR: f32 = -0.125;
-                    const SMOOTHING_DECREASE_FACTOR: f32 = -1.35;
-                    const SCALING_FACTOR: f32 = 0.7;
-                    const ROLL_SPEED: f32 = 2.;
-                    const PITCH_SPEED: f32 = 1.25;
-                    const YAW_SPEED: f32 = 0.5;
+        match self.game.run {
+            RunState::NewGame => {
+                // Apply demo camera controls until we get input.
+                const DEMO_SPEED: f32 = 0.05;
+                let demo_rotation = Quaternion::from_angle_y(Rad(delta_time * DEMO_SPEED));
+                self.game.camera_position = demo_rotation.rotate_vector(self.game.camera_position);
+                self.game.camera_quaternion = demo_rotation * self.game.camera_quaternion;
+            }
+            RunState::Running(_) => {
+                use voxels::Intersection;
+                let intersection = voxels::octree_scale_and_collision_of_point(
+                    self.game.camera_position,
+                    &self.voxel_buffer.read().unwrap(),
+                );
+                match intersection {
+                    Intersection::Empty(scale) => {
+                        const SMOOTHING_INCREASE_FACTOR: f32 = -0.12;
+                        const SMOOTHING_DECREASE_FACTOR: f32 = -1.4;
+                        const SCALING_FACTOR: f32 = 0.7;
+                        const ROLL_SPEED: f32 = 2.;
+                        const PITCH_SPEED: f32 = 1.25;
+                        const YAW_SPEED: f32 = 0.5;
 
-                    self.game.camera_position += if self.game.keyboard.space
-                        || self.game.gamepad.south_button
-                    {
-                        CAMERA_BOOST_FACTOR
-                    } else {
-                        1.
-                    } * self
-                        .game
-                        .camera_quaternion
-                        .rotate_vector(Vector3::new(0., 0., delta_time * self.game.camera_speed));
+                        self.game.camera_position += if self.game.keyboard.space
+                            || self.game.gamepad.south_button
+                        {
+                            CAMERA_BOOST_FACTOR
+                        } else {
+                            1.
+                        } * self.game.camera_quaternion.rotate_vector(
+                            Vector3::new(0., 0., delta_time * self.game.camera_speed),
+                        );
 
-                    // Use exponential smoothing to make the camera speed change with scale.
-                    let target_speed = DEFAULT_CAMERA_SPEED / scale.powf(SCALING_FACTOR);
-                    let smooth = |factor: f32| 1. - (factor * delta_time).exp();
-                    self.game.camera_speed += if target_speed > self.game.camera_speed {
-                        smooth(SMOOTHING_INCREASE_FACTOR)
-                    } else {
-                        smooth(SMOOTHING_DECREASE_FACTOR)
-                    } * (target_speed - self.game.camera_speed);
+                        // Use exponential smoothing to make the camera speed change with scale.
+                        let target_speed = DEFAULT_CAMERA_SPEED / scale.powf(SCALING_FACTOR);
+                        let smooth = |factor: f32| 1. - (factor * delta_time).exp();
+                        self.game.camera_speed += if target_speed > self.game.camera_speed {
+                            smooth(SMOOTHING_INCREASE_FACTOR)
+                        } else {
+                            smooth(SMOOTHING_DECREASE_FACTOR)
+                        } * (target_speed - self.game.camera_speed);
 
-                    let roll = (f32::from(self.game.keyboard.left)
-                        - f32::from(self.game.keyboard.right)
-                        - self.game.gamepad.left_stick[0])
+                        let roll = (f32::from(self.game.keyboard.left)
+                            - f32::from(self.game.keyboard.right)
+                            - self.game.gamepad.left_stick[0])
+                            .clamp(-1., 1.);
+                        let pitch = (f32::from(self.game.keyboard.up)
+                            - f32::from(self.game.keyboard.down)
+                            + self.game.gamepad.left_stick[1])
+                            .clamp(-1., 1.);
+                        let yaw = (f32::from(self.game.keyboard.d)
+                            - f32::from(self.game.keyboard.a)
+                            + match self.game.gamepad.yaw {
+                                SharedAxis::Single(value) => value,
+                                SharedAxis::Split(left, right) => right - left,
+                            })
                         .clamp(-1., 1.);
-                    let pitch = (f32::from(self.game.keyboard.up)
-                        - f32::from(self.game.keyboard.down)
-                        + self.game.gamepad.left_stick[1])
-                        .clamp(-1., 1.);
-                    let yaw = (f32::from(self.game.keyboard.d) - f32::from(self.game.keyboard.a)
-                        + match self.game.gamepad.yaw {
-                            SharedAxis::Single(value) => value,
-                            SharedAxis::Split(left, right) => right - left,
-                        })
-                    .clamp(-1., 1.);
 
-                    self.game.camera_quaternion = self.game.camera_quaternion
-                        * Quaternion::from_angle_z(Rad(delta_time * ROLL_SPEED * roll))
-                        * Quaternion::from_angle_x(Rad(delta_time * PITCH_SPEED * pitch))
-                        * Quaternion::from_angle_y(Rad(delta_time * YAW_SPEED * yaw));
-                }
-                Intersection::Collision => {
-                    reset_camera(&mut self.game);
-                    self.game.waiting_for_input = true;
-                    self.game.points = 0;
-                }
-                Intersection::Portal(depth) => {
-                    let points_gained = if depth == voxels::MAXIMUM_GOAL_DEPTH {
-                        6
-                    } else {
-                        0
-                    } + depth
-                        + 1
-                        - voxels::MINIMUM_GOAL_DEPTH;
-                    self.game.points += points_gained;
-                    // TODO: Write each run to a file.
-                    println!(
-                        "{:?}: Portal depth: {depth}, +{points_gained}, Score: {}\n",
-                        self.app_start_time.elapsed(),
-                        self.game.points,
-                    );
+                        self.game.camera_quaternion = self.game.camera_quaternion
+                            * Quaternion::from_angle_z(Rad(delta_time * ROLL_SPEED * roll))
+                            * Quaternion::from_angle_x(Rad(delta_time * PITCH_SPEED * pitch))
+                            * Quaternion::from_angle_y(Rad(delta_time * YAW_SPEED * yaw));
+                    }
+                    Intersection::Collision => {
+                        reset_camera(&mut self.game);
+                        self.game.run = RunState::NewGame;
+                        self.game.points = 0;
+                    }
+                    Intersection::Portal(depth) => {
+                        let points_gained = if depth == voxels::MAXIMUM_GOAL_DEPTH {
+                            6
+                        } else {
+                            0
+                        } + depth
+                            + 1
+                            - voxels::MINIMUM_GOAL_DEPTH;
+                        self.game.points += points_gained;
+                        // TODO: Write each run to a file.
+                        println!(
+                            "{:.3}s: Portal depth: {depth}, +{points_gained}, Score: {}\n",
+                            self.app_start_time.elapsed().as_secs_f32(),
+                            self.game.points,
+                        );
 
-                    self.new_random_world();
+                        self.new_random_world();
 
-                    reset_camera(&mut self.game);
+                        reset_camera(&mut self.game);
+                    }
                 }
-            };
+            }
         }
     }
 }
@@ -508,78 +603,6 @@ fn create_random_world(
     )
 }
 
-fn handle_controller_inputs(gilrs: &mut Gilrs, gamepad: &mut GamepadState) -> bool {
-    // Default to handling no events.
-    let mut processed = false;
-
-    // Process all queued events.
-    while let Some(event) = gilrs.next_event() {
-        use gilrs::ev::EventType;
-        use SharedAxis::{Single, Split};
-        match event.event {
-            EventType::AxisChanged(axis, val, _) => match axis {
-                gilrs::Axis::LeftStickX => {
-                    gamepad.left_stick[0] = val;
-                    processed = true;
-                }
-                gilrs::Axis::LeftStickY => {
-                    gamepad.left_stick[1] = val;
-                    processed = true;
-                }
-                _ => (),
-            },
-            EventType::ButtonPressed(gilrs::Button::South, _) => {
-                gamepad.south_button = true;
-                processed = true;
-            }
-            EventType::ButtonReleased(gilrs::Button::South, _) => {
-                gamepad.south_button = false;
-                processed = true;
-            }
-            EventType::ButtonChanged(gilrs::Button::RightTrigger2, val, _)
-                if gamepad.joystick_mode =>
-            {
-                gamepad.yaw = Single(val + val - 1.);
-                processed = true;
-            }
-            EventType::ButtonPressed(gilrs::Button::LeftTrigger, _) if !gamepad.joystick_mode => {
-                gamepad.yaw = if let Split(_, right) = gamepad.yaw {
-                    Split(1., right)
-                } else {
-                    Split(1., 0.)
-                };
-                processed = true;
-            }
-            EventType::ButtonReleased(gilrs::Button::LeftTrigger, _) if !gamepad.joystick_mode => {
-                gamepad.yaw = if let Split(_, right) = gamepad.yaw {
-                    Split(0., right)
-                } else {
-                    Split(0., 0.)
-                };
-                processed = true;
-            }
-            EventType::ButtonPressed(gilrs::Button::RightTrigger, _) if !gamepad.joystick_mode => {
-                gamepad.yaw = if let Split(left, _) = gamepad.yaw {
-                    Split(left, 1.)
-                } else {
-                    Split(0., 1.)
-                };
-                processed = true;
-            }
-            EventType::ButtonReleased(gilrs::Button::RightTrigger, _) if !gamepad.joystick_mode => {
-                gamepad.yaw = if let Split(left, _) = gamepad.yaw {
-                    Split(left, 0.)
-                } else {
-                    Split(0., 0.)
-                };
-                processed = true;
-            }
-            _ => (),
-        }
-    }
-    processed
-}
-
 fn create_updated_overlay(
     overlay: &mut Overlay,
     game: &mut GameState,
@@ -590,11 +613,18 @@ fn create_updated_overlay(
         overlay.gui.immediate_ui(|gui| {
             let ctx = gui.context();
             egui::Window::new("App GUI").show(&ctx, |ui| {
-                ui.heading(format!("Score: {}", game.points));
-                ui.separator();
-
                 ui.heading("Options");
                 ui.checkbox(&mut game.gamepad.joystick_mode, "Treat gamepad as joystick");
+
+                // Add bottom UI based on the game state.
+                match game.run {
+                    RunState::Running(start_time) => {
+                        ui.separator();
+                        ui.heading(format!("Score: {}", game.points));
+                        ui.label(format!("Time: {:.3}s", start_time.elapsed().as_secs_f32()));
+                    }
+                    RunState::NewGame => (),
+                }
             });
         });
 
@@ -614,6 +644,16 @@ fn reset_camera(game: &mut GameState) {
     game.camera_speed = DEFAULT_CAMERA_SPEED;
 }
 
+impl RunState {
+    pub fn ensure_running_if(&mut self, start_game: bool) {
+        // If the game has received actions to start and isn't running, transition to the running state.
+        match self {
+            RunState::NewGame if start_game => *self = RunState::Running(Instant::now()),
+            _ => (),
+        }
+    }
+}
+
 impl GameState {
     pub fn default() -> Self {
         GameState {
@@ -624,7 +664,7 @@ impl GameState {
             gilrs: Gilrs::new().unwrap(),
             keyboard: KeyboardState::default(),
             points: 0,
-            waiting_for_input: true,
+            run: RunState::NewGame,
         }
     }
 }

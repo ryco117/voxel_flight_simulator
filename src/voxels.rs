@@ -31,15 +31,6 @@ struct Voxel {
     pub id: u32,
 }
 
-const FTL_CELL: Vector3<f32> = Vector3::new(-0.5, 0.5, -0.5);
-const FTR_CELL: Vector3<f32> = Vector3::new(0.5, 0.5, -0.5);
-const FBL_CELL: Vector3<f32> = Vector3::new(-0.5, -0.5, -0.5);
-const FBR_CELL: Vector3<f32> = Vector3::new(0.5, -0.5, -0.5);
-const BTL_CELL: Vector3<f32> = Vector3::new(-0.5, 0.5, 0.5);
-const BTR_CELL: Vector3<f32> = Vector3::new(0.5, 0.5, 0.5);
-const BBL_CELL: Vector3<f32> = Vector3::new(-0.5, -0.5, 0.5);
-const BBR_CELL: Vector3<f32> = Vector3::new(0.5, -0.5, 0.5);
-
 pub const MINIMUM_GOAL_DEPTH: u32 = 6;
 pub const MAXIMUM_VOXEL_DEPTH: u32 = 15;
 pub const MAXIMUM_GOAL_DEPTH: u32 = MAXIMUM_VOXEL_DEPTH - 1;
@@ -208,35 +199,23 @@ pub struct OctreeStats {
     pub voxel_count: u32,
 }
 
+// Helper struct for creating random floats uniformly in the range [0, 1).
+pub struct RandomFloats {
+    random: rand::rngs::ThreadRng,
+    dist: Uniform<f32>,
+}
+
+// Generate a random voxel-octree stored in a contiguous array.
 pub fn generate_recursive_voxel_octree(
     desired_voxel_count: u32,
     desired_portal_count: u32,
 ) -> (Vec<VoxelCompact>, OctreeStats) {
-    pub struct RandomFloats {
-        random: rand::rngs::ThreadRng,
-        dist: Uniform<f32>,
-    }
-
-    // Helper struct for creating random floats in the range [0, 1).
-    impl RandomFloats {
-        pub fn default() -> Self {
-            RandomFloats {
-                random: rand::thread_rng(),
-                dist: Uniform::new(0., 1.),
-            }
-        }
-
-        pub fn sample(&mut self) -> f32 {
-            self.dist.sample(&mut self.random)
-        }
-    }
-
-    // Generate a random voxel-colour.
+    // Helper to generate a random voxel-colour.
     fn random_colour(random: &mut RandomFloats) -> Vector4<f32> {
         Vector4::new(random.sample(), random.sample(), random.sample(), 1.)
     }
 
-    // Generate a random leaf-voxel.
+    // Helper to generate a random leaf-voxel.
     fn random_leaf(random: &mut RandomFloats, depth: u32, stats: &mut OctreeStats) -> Voxel {
         let colour = random_colour(random);
         stats.voxel_count += 1;
@@ -352,11 +331,11 @@ pub fn generate_recursive_voxel_octree(
 
     let random = &mut RandomFloats::default();
     loop {
-        // Loop through random graphs.
+        // Loop through random graphs until one satisfies all conditions.
         let mut stats = OctreeStats::default();
         let v = roll_voxel_graph(random, 0, &mut stats);
 
-        // If we have generated enough voxels, compactify the octree and return it.
+        // If we have generated enough voxels, compactify the octree into an array and return it.
         if stats.voxel_count >= desired_voxel_count && stats.goal_count >= desired_portal_count {
             return (compact_octree_from_root(v, stats.voxel_count), stats);
         }
@@ -369,12 +348,13 @@ pub enum Intersection {
     Portal(u32),
 }
 
+// Determine where in the octree a point is, and whether it is colliding with a voxel.
 pub fn octree_scale_and_collision_of_point(
     position: Vector3<f32>,
     octree: &[VoxelCompact],
 ) -> Intersection {
     const GOAL_RADIUS_SQUARED: f32 = 0.75;
-    fn f(
+    fn search_graph(
         scale: f32,
         iter: u32,
         p: Vector3<f32>,
@@ -398,34 +378,45 @@ pub fn octree_scale_and_collision_of_point(
                     Intersection::Empty(scale)
                 }
             } else {
-                let func =
-                    |p: Vector3<f32>, index: u32| f(scale + scale, iter + 1, p + p, index, octree);
+                // The center of each sub-voxel relative to the parent.
+                const BTR_CELL: Vector3<f32> = Vector3::new(0.5, 0.5, 0.5);
+                const FTR_CELL: Vector3<f32> = Vector3::new(0.5, 0.5, -0.5);
+                const BBR_CELL: Vector3<f32> = Vector3::new(0.5, -0.5, 0.5);
+                const FBR_CELL: Vector3<f32> = Vector3::new(0.5, -0.5, -0.5);
+                const BTL_CELL: Vector3<f32> = Vector3::new(-0.5, 0.5, 0.5);
+                const FTL_CELL: Vector3<f32> = Vector3::new(-0.5, 0.5, -0.5);
+                const BBL_CELL: Vector3<f32> = Vector3::new(-0.5, -0.5, 0.5);
+                const FBL_CELL: Vector3<f32> = Vector3::new(-0.5, -0.5, -0.5);
+
+                let search_graph = |p: Vector3<f32>, index: u32| {
+                    search_graph(scale + scale, iter + 1, p + p, index, octree)
+                };
                 if p.x > 0.0 {
                     if p.y > 0.0 {
                         if p.z > 0.0 {
-                            func(p - BTR_CELL, voxel.node_btr)
+                            search_graph(p - BTR_CELL, voxel.node_btr)
                         } else {
-                            func(p - FTR_CELL, voxel.node_ftr)
+                            search_graph(p - FTR_CELL, voxel.node_ftr)
                         }
                     } else {
                         if p.z > 0.0 {
-                            func(p - BBR_CELL, voxel.node_bbr)
+                            search_graph(p - BBR_CELL, voxel.node_bbr)
                         } else {
-                            func(p - FBR_CELL, voxel.node_fbr)
+                            search_graph(p - FBR_CELL, voxel.node_fbr)
                         }
                     }
                 } else {
                     if p.y > 0.0 {
                         if p.z > 0.0 {
-                            func(p - BTL_CELL, voxel.node_btl)
+                            search_graph(p - BTL_CELL, voxel.node_btl)
                         } else {
-                            func(p - FTL_CELL, voxel.node_ftl)
+                            search_graph(p - FTL_CELL, voxel.node_ftl)
                         }
                     } else {
                         if p.z > 0.0 {
-                            func(p - BBL_CELL, voxel.node_bbl)
+                            search_graph(p - BBL_CELL, voxel.node_bbl)
                         } else {
-                            func(p - FBL_CELL, voxel.node_fbl)
+                            search_graph(p - FBL_CELL, voxel.node_fbl)
                         }
                     }
                 }
@@ -434,8 +425,22 @@ pub fn octree_scale_and_collision_of_point(
     }
 
     if position.x.abs() > 1. || position.y.abs() > 1. || position.z.abs() > 1. {
+        // If the point is outside the root voxel then there cannot be an intersection.
         Intersection::Empty(1.)
     } else {
-        f(1., 0, position, 0, octree)
+        search_graph(1., 0, position, 0, octree)
+    }
+}
+
+impl RandomFloats {
+    pub fn default() -> Self {
+        RandomFloats {
+            random: rand::thread_rng(),
+            dist: Uniform::new(0., 1.),
+        }
+    }
+
+    pub fn sample(&mut self) -> f32 {
+        self.dist.sample(&mut self.random)
     }
 }
