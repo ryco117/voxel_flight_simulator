@@ -32,7 +32,7 @@ layout(set = 0, binding = 0) readonly buffer VoxelOctree {
 
 const float pi = 3.14159265358;
 const float e = 2.718281828;
-const int maxIterations = 40;
+const int maxIterations = 35;
 const float maxIterationsF = float(maxIterations);
 const int globalMaxDepth = 15;
 const float epsilon = 0.005;
@@ -363,7 +363,7 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 				gradient = cubeNorm(s);
 				p += projectToOutsideDistance(s) * scale;
 
-				if(voxel.vtype == 3 && reflections < 3) {
+				if(voxel.vtype == 3 && reflections < 2) {
 					reflections += 1;
 					d -= 2.0*dot(d, gradient)*gradient;
 					invD = 1.0 / d;

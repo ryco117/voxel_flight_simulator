@@ -52,12 +52,18 @@ struct Overlay {
     pub last_cursor_movement: Instant,
 }
 
-enum RunState {
-    NewGame,
+enum StartState {
+    Unstarted,
     Running(Instant),
 }
 
-// TODO: Make level/prtal-depth tracked as well as points.
+#[derive(Default)]
+struct RunState {
+    pub level: u32,
+    pub points: u32,
+    pub start: StartState,
+}
+
 struct GameState {
     pub camera_position: Vector3<f32>,
     pub camera_quaternion: Quaternion<f32>,
@@ -65,11 +71,11 @@ struct GameState {
     pub gamepad: GamepadState,
     pub gilrs: Gilrs,
     pub keyboard: KeyboardState,
-    pub points: u32,
+    pub options: GameOptions,
     pub run: RunState,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 struct KeyboardState {
     pub up: bool,
     pub down: bool,
@@ -80,18 +86,27 @@ struct KeyboardState {
     pub d: bool,
 }
 
-#[derive(Clone, Copy)]
 enum SharedAxis {
     Single(f32),
     Split(f32, f32),
 }
 
-#[derive(Copy, Clone, Default)]
+#[derive(Clone, Copy, PartialEq)]
+enum HoldOrToggle {
+    Hold,
+    Toggle(bool),
+}
+
+struct GameOptions {
+    pub camera_boost: HoldOrToggle,
+    pub joystick_mode: bool,
+}
+
+#[derive(Default)]
 struct GamepadState {
     pub left_stick: [f32; 2],
     pub yaw: SharedAxis,
     pub south_button: bool,
-    pub joystick_mode: bool,
 }
 
 fn main() {
@@ -163,7 +178,7 @@ fn main() {
                 app.handle_controller_inputs();
 
                 // Update camera state.
-                app.update_camera_state(delta_time);
+                app.update_player_state(delta_time);
 
                 // Get secondary command buffer for rendering GUI.
                 let renderer = app.window_manager.get_primary_renderer_mut().unwrap();
@@ -290,7 +305,7 @@ impl App {
         state: ElementState,
         control_flow: &mut ControlFlow,
     ) {
-        let mut start_game = false;
+        let mut game_starting_event = false;
         match state {
             ElementState::Pressed => match keycode {
                 VirtualKeyCode::Escape => {
@@ -305,7 +320,7 @@ impl App {
                 }
                 VirtualKeyCode::F5 => {
                     self.new_random_world();
-                    self.game.points = 0;
+                    self.game.run = RunState::default();
                     reset_camera(&mut self.game);
                 }
                 VirtualKeyCode::F11 => {
@@ -328,31 +343,35 @@ impl App {
                 // Camera controls.
                 VirtualKeyCode::Up => {
                     self.game.keyboard.up = true;
-                    start_game = true;
+                    game_starting_event = true;
                 }
                 VirtualKeyCode::Down => {
                     self.game.keyboard.down = true;
-                    start_game = true;
+                    game_starting_event = true;
                 }
                 VirtualKeyCode::Left => {
                     self.game.keyboard.left = true;
-                    start_game = true;
+                    game_starting_event = true;
                 }
                 VirtualKeyCode::Right => {
                     self.game.keyboard.right = true;
-                    start_game = true;
+                    game_starting_event = true;
                 }
                 VirtualKeyCode::Space => {
                     self.game.keyboard.space = true;
-                    start_game = true;
+                    match &mut self.game.options.camera_boost {
+                        HoldOrToggle::Toggle(t) => *t = !*t,
+                        HoldOrToggle::Hold => (),
+                    }
+                    game_starting_event = true;
                 }
                 VirtualKeyCode::A => {
                     self.game.keyboard.a = true;
-                    start_game = true;
+                    game_starting_event = true;
                 }
                 VirtualKeyCode::D => {
                     self.game.keyboard.d = true;
-                    start_game = true;
+                    game_starting_event = true;
                 }
                 _ => (),
             },
@@ -383,8 +402,8 @@ impl App {
             },
         }
 
-        // If we processed any events, we're no longer waiting for input.
-        self.game.run.ensure_running_if(start_game);
+        // If we processed any game-starting events, we're no longer waiting for input.
+        self.game.run.start.ensure_running_if(game_starting_event);
     }
 
     fn handle_controller_inputs(&mut self) {
@@ -409,6 +428,10 @@ impl App {
                 },
                 EventType::ButtonPressed(gilrs::Button::South, _) => {
                     self.game.gamepad.south_button = true;
+                    match &mut self.game.options.camera_boost {
+                        HoldOrToggle::Toggle(t) => *t = !*t,
+                        HoldOrToggle::Hold => (),
+                    }
                     processed = true;
                 }
                 EventType::ButtonReleased(gilrs::Button::South, _) => {
@@ -416,13 +439,13 @@ impl App {
                     processed = true;
                 }
                 EventType::ButtonChanged(gilrs::Button::RightTrigger2, val, _)
-                    if self.game.gamepad.joystick_mode =>
+                    if self.game.options.joystick_mode =>
                 {
                     self.game.gamepad.yaw = Single(val + val - 1.);
                     processed = true;
                 }
                 EventType::ButtonPressed(gilrs::Button::LeftTrigger, _)
-                    if !self.game.gamepad.joystick_mode =>
+                    if !self.game.options.joystick_mode =>
                 {
                     self.game.gamepad.yaw = if let Split(_, right) = self.game.gamepad.yaw {
                         Split(1., right)
@@ -432,7 +455,7 @@ impl App {
                     processed = true;
                 }
                 EventType::ButtonReleased(gilrs::Button::LeftTrigger, _)
-                    if !self.game.gamepad.joystick_mode =>
+                    if !self.game.options.joystick_mode =>
                 {
                     self.game.gamepad.yaw = if let Split(_, right) = self.game.gamepad.yaw {
                         Split(0., right)
@@ -442,7 +465,7 @@ impl App {
                     processed = true;
                 }
                 EventType::ButtonPressed(gilrs::Button::RightTrigger, _)
-                    if !self.game.gamepad.joystick_mode =>
+                    if !self.game.options.joystick_mode =>
                 {
                     self.game.gamepad.yaw = if let Split(left, _) = self.game.gamepad.yaw {
                         Split(left, 1.)
@@ -452,7 +475,7 @@ impl App {
                     processed = true;
                 }
                 EventType::ButtonReleased(gilrs::Button::RightTrigger, _)
-                    if !self.game.gamepad.joystick_mode =>
+                    if !self.game.options.joystick_mode =>
                 {
                     self.game.gamepad.yaw = if let Split(left, _) = self.game.gamepad.yaw {
                         Split(left, 0.)
@@ -466,19 +489,20 @@ impl App {
         }
 
         // If we processed any events, we're no longer waiting for input.
-        self.game.run.ensure_running_if(processed);
+        self.game.run.start.ensure_running_if(processed);
     }
 
-    fn update_camera_state(&mut self, delta_time: f32) {
-        match self.game.run {
-            RunState::NewGame => {
+    // Update state for the player/camera and their run.
+    fn update_player_state(&mut self, delta_time: f32) {
+        match self.game.run.start {
+            StartState::Unstarted => {
                 // Apply demo camera controls until we get input.
                 const DEMO_SPEED: f32 = 0.05;
                 let demo_rotation = Quaternion::from_angle_y(Rad(delta_time * DEMO_SPEED));
                 self.game.camera_position = demo_rotation.rotate_vector(self.game.camera_position);
                 self.game.camera_quaternion = demo_rotation * self.game.camera_quaternion;
             }
-            RunState::Running(_) => {
+            StartState::Running(_) => {
                 use voxels::Intersection;
                 let intersection = voxels::octree_scale_and_collision_of_point(
                     self.game.camera_position,
@@ -495,6 +519,7 @@ impl App {
 
                         self.game.camera_position += if self.game.keyboard.space
                             || self.game.gamepad.south_button
+                            || self.game.options.camera_boost.into()
                         {
                             CAMERA_BOOST_FACTOR
                         } else {
@@ -535,23 +560,20 @@ impl App {
                     }
                     Intersection::Collision => {
                         reset_camera(&mut self.game);
-                        self.game.run = RunState::NewGame;
-                        self.game.points = 0;
+                        self.game.run = RunState::default();
                     }
                     Intersection::Portal(depth) => {
-                        let points_gained = if depth == voxels::MAXIMUM_GOAL_DEPTH {
-                            6
-                        } else {
-                            0
-                        } + depth
-                            + 1
-                            - voxels::MINIMUM_GOAL_DEPTH;
-                        self.game.points += points_gained;
+                        let points_gained =
+                            u32::from(depth == voxels::MAXIMUM_GOAL_DEPTH) + depth + 1
+                                - voxels::MINIMUM_GOAL_DEPTH;
+                        self.game.run.points += points_gained;
+                        self.game.run.level += 1;
                         // TODO: Write each run to a file.
                         println!(
-                            "{:.3}s: Portal depth: {depth}, +{points_gained}, Score: {}\n",
+                            "{:.3}s: Portal depth: {depth}, +{points_gained}, Score: {}, Levels: {}\n",
                             self.app_start_time.elapsed().as_secs_f32(),
-                            self.game.points,
+                            self.game.run.points,
+                            self.game.run.level,
                         );
 
                         self.new_random_world();
@@ -593,6 +615,7 @@ fn create_random_world(
     .expect("Failed to create voxel buffer");
 
     (
+        // Create a descriptor set for the voxel buffer data.
         PersistentDescriptorSet::new(
             &allocators.descriptor_set,
             pipeline.layout().set_layouts().get(0).unwrap().clone(),
@@ -603,74 +626,123 @@ fn create_random_world(
     )
 }
 
+// Update the internal GUI state and return an optional command buffer to draw the overlay.
 fn create_updated_overlay(
     overlay: &mut Overlay,
     game: &mut GameState,
     renderer: &mut VulkanoWindowRenderer,
 ) -> Option<SecondaryAutoCommandBuffer> {
     if overlay.is_visible {
-        // Update GUI state.
+        // Update the GUI state.
         overlay.gui.immediate_ui(|gui| {
             let ctx = gui.context();
-            egui::Window::new("App GUI").show(&ctx, |ui| {
-                ui.heading("Options");
-                ui.checkbox(&mut game.gamepad.joystick_mode, "Treat gamepad as joystick");
 
-                // Add bottom UI based on the game state.
-                match game.run {
-                    RunState::Running(start_time) => {
-                        ui.separator();
-                        ui.heading(format!("Score: {}", game.points));
-                        ui.label(format!("Time: {:.3}s", start_time.elapsed().as_secs_f32()));
+            // Create a window for setting game options.
+            egui::Window::new("Options")
+                .default_open(false)
+                .show(&ctx, |ui| {
+                    ui.checkbox(&mut game.options.joystick_mode, "Treat gamepad as joystick");
+
+                    let mut b = game.options.camera_boost != HoldOrToggle::Hold;
+                    if ui.checkbox(&mut b, "Toggle boost").changed() {
+                        game.options.camera_boost = match game.options.camera_boost {
+                            HoldOrToggle::Hold => HoldOrToggle::Toggle(false),
+                            HoldOrToggle::Toggle(_) => HoldOrToggle::Hold,
+                        };
                     }
-                    RunState::NewGame => (),
+
+                    ui.checkbox(&mut overlay.is_visible, "Show overlay");
+                });
+
+            // Optionally create a window for showing run information.
+            match game.run.start {
+                StartState::Running(start_time) => {
+                    egui::Window::new("Run Info").show(&ctx, |ui| {
+                        ui.heading(format!("Score: {}", game.run.points));
+                        ui.label(format!("Level: {}", game.run.level));
+                        ui.label(format!("Time: {:.3}s", start_time.elapsed().as_secs_f32()));
+                    });
                 }
-            });
+                StartState::Unstarted => (),
+            };
         });
 
+        // Return a command buffer to draw the GUI.
         Some(
             overlay
                 .gui
                 .draw_on_subpass_image(renderer.swapchain_image_size()),
         )
     } else {
+        // The overlay is not enabled, so return no command buffer.
         None
     }
 }
 
+// Helper to reset the camera to the default position and orientation.
 fn reset_camera(game: &mut GameState) {
     game.camera_position = DEFAULT_CAMERA_POSITION;
     game.camera_quaternion = DEFAULT_CAMERA_ORIENTATION;
     game.camera_speed = DEFAULT_CAMERA_SPEED;
 }
 
-impl RunState {
+// Helper function to ensure the game is running if conditions are met.
+impl StartState {
     pub fn ensure_running_if(&mut self, start_game: bool) {
         // If the game has received actions to start and isn't running, transition to the running state.
         match self {
-            RunState::NewGame if start_game => *self = RunState::Running(Instant::now()),
+            StartState::Unstarted if start_game => *self = StartState::Running(Instant::now()),
             _ => (),
         }
     }
 }
 
-impl GameState {
-    pub fn default() -> Self {
-        GameState {
+// Default game start state.
+impl Default for StartState {
+    fn default() -> Self {
+        Self::Unstarted
+    }
+}
+
+// Initialize the game state with default values.
+impl Default for GameState {
+    fn default() -> Self {
+        Self {
             camera_position: DEFAULT_CAMERA_POSITION,
             camera_quaternion: DEFAULT_CAMERA_ORIENTATION,
             camera_speed: DEFAULT_CAMERA_SPEED,
             gamepad: GamepadState::default(),
             gilrs: Gilrs::new().unwrap(),
             keyboard: KeyboardState::default(),
-            points: 0,
-            run: RunState::NewGame,
+            options: GameOptions::default(),
+            run: RunState::default(),
         }
     }
 }
 
+// Make managaing the gamepad state easier with default axis value and type.
 impl Default for SharedAxis {
     fn default() -> Self {
-        SharedAxis::Single(0.)
+        Self::Single(0.)
+    }
+}
+
+// Default game options.
+impl Default for GameOptions {
+    fn default() -> Self {
+        Self {
+            camera_boost: HoldOrToggle::Hold,
+            joystick_mode: false,
+        }
+    }
+}
+
+// Return the stored toggle state; false for hold and state dependent for toggle.
+impl From<HoldOrToggle> for bool {
+    fn from(hot: HoldOrToggle) -> Self {
+        match hot {
+            HoldOrToggle::Toggle(t) => t,
+            HoldOrToggle::Hold => false,
+        }
     }
 }
