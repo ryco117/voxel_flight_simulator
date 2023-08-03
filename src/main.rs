@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::{fs::File, path, sync::Arc, time::Instant};
 
 use cgmath::{Quaternion, Rad, Rotation, Rotation3, Vector3};
 use egui_winit_vulkano::{Gui, GuiConfig};
@@ -35,12 +35,15 @@ const DEFAULT_CAMERA_ORIENTATION: Quaternion<f32> = Quaternion::new(1., 0., 0., 
 const DEFAULT_CAMERA_SPEED: f32 = 0.175;
 const CAMERA_BOOST_FACTOR: f32 = 3.5;
 
+struct LogFile(File);
+
 struct App {
     pub app_start_time: Instant,
     pub descriptor_set: Arc<PersistentDescriptorSet>,
     pub engine: helens::Engine,
     pub game: GameState,
     pub last_draw_time: Option<Instant>,
+    pub log_file: LogFile,
     pub overlay: Overlay,
     pub voxel_buffer: Subbuffer<[VoxelCompact]>,
     pub window_manager: VulkanoWindows,
@@ -270,9 +273,12 @@ impl App {
             }
         };
 
+        // Create a log file for app convenience.
+        let mut log_file = LogFile::default();
+
         // Initialize storage buffer with random voxel-octree data.
         let (descriptor_set, voxel_buffer) =
-            create_random_world(engine.allocators(), engine.pipeline());
+            create_random_world(engine.allocators(), engine.pipeline(), &mut log_file);
 
         // Create an initial game state.
         let game_state = GameState::default();
@@ -285,6 +291,7 @@ impl App {
                 engine,
                 game: game_state,
                 last_draw_time: None,
+                log_file,
                 overlay,
                 voxel_buffer,
                 window_manager,
@@ -293,8 +300,11 @@ impl App {
     }
 
     pub fn new_random_world(&mut self) {
-        let (descriptor_set, voxel_buffer) =
-            create_random_world(self.engine.allocators(), self.engine.pipeline());
+        let (descriptor_set, voxel_buffer) = create_random_world(
+            self.engine.allocators(),
+            self.engine.pipeline(),
+            &mut self.log_file,
+        );
         self.descriptor_set = descriptor_set;
         self.voxel_buffer = voxel_buffer;
     }
@@ -568,13 +578,12 @@ impl App {
                                 - voxels::MINIMUM_GOAL_DEPTH;
                         self.game.run.points += points_gained;
                         self.game.run.level += 1;
-                        // TODO: Write each run to a file.
-                        println!(
-                            "{:.3}s: Portal depth: {depth}, +{points_gained}, Score: {}, Levels: {}\n",
+
+                        self.log_file.log(format!("{:.3}s: Portal depth: {depth}, +{points_gained}, Score: {}, Levels: {}\n\n",
                             self.app_start_time.elapsed().as_secs_f32(),
                             self.game.run.points,
                             self.game.run.level,
-                        );
+                        ).as_str());
 
                         self.new_random_world();
 
@@ -589,12 +598,16 @@ impl App {
 fn create_random_world(
     allocators: &Allocators,
     pipeline: &Arc<GraphicsPipeline>,
+    log_file: &mut LogFile,
 ) -> (Arc<PersistentDescriptorSet>, Subbuffer<[VoxelCompact]>) {
     // Generate a random voxel-octree.
     let (voxel_octree, stats) = voxels::generate_recursive_voxel_octree(256, 10);
-    println!(
-        "Voxel Count: {:?}, Portal Count: {:?}",
-        stats.voxel_count, stats.goal_count
+    log_file.log(
+        format!(
+            "Voxel Count: {:?}, Portal Count: {:?}\n",
+            stats.voxel_count, stats.goal_count
+        )
+        .as_str(),
     );
 
     // Upload the voxel-octree to the GPU.
@@ -612,7 +625,7 @@ fn create_random_world(
         upload_usage,
         voxel_octree.into_iter(),
     )
-    .expect("Failed to create voxel buffer");
+    .expect("Failed to create voxel buffer.");
 
     (
         // Create a descriptor set for the voxel buffer data.
@@ -621,7 +634,7 @@ fn create_random_world(
             pipeline.layout().set_layouts().get(0).unwrap().clone(),
             [WriteDescriptorSet::buffer(0, buffer.clone())],
         )
-        .expect("Failed to create voxel buffer descriptor set"),
+        .expect("Failed to create voxel buffer descriptor set."),
         buffer,
     )
 }
@@ -653,6 +666,48 @@ fn create_updated_overlay(
 
                     ui.checkbox(&mut overlay.is_visible, "Show overlay");
                 });
+
+            {
+                enum HelpWindowEntry {
+                    Title(&'static str),
+                    Item(&'static str, &'static str),
+                    Empty(),
+                }
+                use HelpWindowEntry::{Empty, Item, Title};
+
+                egui::Window::new("Help")
+                    .default_open(false)
+                    .show(&ctx, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            // TODO: Complete controls list.
+                            let controls_list = [
+                                Title("App-Window Management"),
+                                Item("F11", "Toggle window fullscreen"),
+                                Item("ESC", "If fullscreen, then enter windowed mode. Else, close the application"),
+                                Item("O", "Toggle visibility of the app overlay"),
+                                Empty(),
+                                Title("Game"),
+                                Item("F5", "Generate a new random world and reset game"),
+                            ];
+                            egui::Grid::new("scheme_index_grid").show(ui, |ui| {
+                                for entry in controls_list {
+                                    match entry {
+                                        Empty() => {},
+                                        Item(key, desc) => {
+                                            ui.vertical_centered(|ui| ui.label(egui::RichText::new(key).monospace()));
+                                            ui.label(desc);
+                                        }
+                                        Title(title) => {
+                                            ui.separator();
+                                            ui.heading(title);
+                                        }
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                        });
+                    });
+            }
 
             // Optionally create a window for showing run information.
             match game.run.start {
@@ -743,6 +798,36 @@ impl From<HoldOrToggle> for bool {
         match hot {
             HoldOrToggle::Toggle(t) => t,
             HoldOrToggle::Hold => false,
+        }
+    }
+}
+
+// Simple helper to log to an app file and stdout.
+impl LogFile {
+    pub fn default() -> Self {
+        let file_path = if let Some(p) = dirs::config_local_dir() {
+            let dir = p.join(path::Path::new("voxel_flight_simulator"));
+            if !dir.exists() {
+                std::fs::create_dir_all(&dir).expect("Failed to create app directory.");
+            }
+            dir.join("log.txt")
+        } else {
+            path::PathBuf::from("voxel_flight_simulator_log.txt")
+        };
+        Self(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file_path)
+                .expect("Failed to open log file."),
+        )
+    }
+
+    pub fn log(&mut self, msg: &str) {
+        use std::io::Write;
+        print!("{msg}");
+        if let Err(e) = write!(self.0, "{msg}") {
+            eprintln!("Couldn't write to file: {e}");
         }
     }
 }

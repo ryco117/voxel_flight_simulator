@@ -8,6 +8,7 @@ license = "GPL-3.0+"
 anyhow = "1.0.66"
 bytemuck = "1.13.1"
 cgmath = { version = "0.18.0", features = ["swizzle"] }
+dirs = "5.0.1"
 egui = "0.21.0"
 egui_winit_vulkano = "0.24.0"
 gilrs = "0.10.2"

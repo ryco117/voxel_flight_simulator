@@ -213,8 +213,9 @@ struct AppPipeline {
 impl AppPipeline {
     pub fn new(queue: Arc<Queue>, subpass: Subpass) -> Self {
         let device = queue.device();
-        let vs = entire_view_vs::load(device.clone()).expect("failed to create shader module");
-        let fs = ray_march_voxels_fs::load(device.clone()).expect("failed to create shader module");
+        let vs = entire_view_vs::load(device.clone()).expect("Failed to create shader module.");
+        let fs =
+            ray_march_voxels_fs::load(device.clone()).expect("Failed to create shader module.");
 
         let pipeline = GraphicsPipeline::start()
             // A Vulkan shader may contain multiple entry points, so we specify which one.
