@@ -1,3 +1,4 @@
+use arr_macro::arr;
 use bytemuck::{Pod, Zeroable};
 use cgmath::{InnerSpace, Vector3, Vector4, Zero};
 use rand::distributions::{Distribution, Uniform};
@@ -17,16 +18,20 @@ enum VoxelType {
     Mirror,
 }
 
+enum SubVoxel {
+    FrontTopLeft = 0,
+    FrontTopRight,
+    FrontBottomLeft,
+    FrontBottomRight,
+    BackTopLeft,
+    BackTopRight,
+    BackBottomLeft,
+    BackBottomRight,
+}
+
 struct Voxel {
     pub average_colour: Vector4<f32>,
-    pub node_ftl: GraphRef, // Front-Top-Left
-    pub node_ftr: GraphRef, // Front-Top-Right
-    pub node_fbl: GraphRef, // Front-Bottom-Left
-    pub node_fbr: GraphRef, // Front-Bottom-Right
-    pub node_btl: GraphRef, // Back-Top-Left
-    pub node_btr: GraphRef, // Back-Top-Right
-    pub node_bbl: GraphRef, // Back-Bottom-Left
-    pub node_bbr: GraphRef, // Back-Bottom-Right
+    pub children: [GraphRef; 8],
     pub vtype: VoxelType,
     pub id: u32,
 }
@@ -38,14 +43,7 @@ pub const NULL_VOXEL_INDEX: u32 = 0xFFFF_FFFF;
 
 const LEAF_VOXEL: Voxel = Voxel {
     average_colour: Vector4::new(0., 0., 0., 0.),
-    node_ftl: GraphRef::Recurse(0),
-    node_ftr: GraphRef::Recurse(0),
-    node_fbl: GraphRef::Recurse(0),
-    node_fbr: GraphRef::Recurse(0),
-    node_btl: GraphRef::Recurse(0),
-    node_btr: GraphRef::Recurse(0),
-    node_bbl: GraphRef::Recurse(0),
-    node_bbr: GraphRef::Recurse(0),
+    children: arr![GraphRef::Recurse(0); 8],
     vtype: VoxelType::Colour,
     id: NULL_VOXEL_INDEX,
 };
@@ -54,45 +52,18 @@ const LEAF_VOXEL: Voxel = Voxel {
 #[derive(Copy, Clone, Default, Pod, Zeroable)]
 pub struct VoxelCompact {
     pub average_colour: [f32; 4],
-    pub node_ftl: u32,
-    pub node_ftr: u32,
-    pub node_fbl: u32,
-    pub node_fbr: u32,
-    pub node_btl: u32,
-    pub node_btr: u32,
-    pub node_bbl: u32,
-    pub node_bbr: u32,
+    pub children: [u32; 8],
     pub flags: u32,
-    _alignment_space0: u32,
-    _alignment_space1: u64,
+    _alignment_space: [u32; 3],
 }
 
 impl VoxelCompact {
-    pub fn new(
-        average_colour: [f32; 4],
-        node_ftl: u32,
-        node_ftr: u32,
-        node_fbl: u32,
-        node_fbr: u32,
-        node_btl: u32,
-        node_btr: u32,
-        node_bbl: u32,
-        node_bbr: u32,
-        flags: u32,
-    ) -> Self {
+    pub fn new(average_colour: [f32; 4], children: [u32; 8], flags: u32) -> Self {
         VoxelCompact {
             average_colour,
-            node_ftl,
-            node_ftr,
-            node_fbl,
-            node_fbr,
-            node_btl,
-            node_btr,
-            node_bbl,
-            node_bbr,
+            children,
             flags,
-            _alignment_space0: 0,
-            _alignment_space1: 0,
+            _alignment_space: [0; 3],
         }
     }
 }
@@ -150,28 +121,11 @@ fn compact_octree_from_root(root_voxel: Voxel, voxel_count: u32) -> Vec<VoxelCom
 
         // Get the indices of the referenced voxels and add new voxels to the breadth-first search.
         let mut bfs = vec![];
-        let ftl = ref_to_index(&mut bfs, voxel.node_ftl);
-        let ftr = ref_to_index(&mut bfs, voxel.node_ftr);
-        let fbl = ref_to_index(&mut bfs, voxel.node_fbl);
-        let fbr = ref_to_index(&mut bfs, voxel.node_fbr);
-        let btl = ref_to_index(&mut bfs, voxel.node_btl);
-        let btr = ref_to_index(&mut bfs, voxel.node_btr);
-        let bbl = ref_to_index(&mut bfs, voxel.node_bbl);
-        let bbr = ref_to_index(&mut bfs, voxel.node_bbr);
+        let children = voxel.children.map(|voxel| ref_to_index(&mut bfs, voxel));
 
         // Add the new compact voxel to the accumulator.
-        let compact_voxel = VoxelCompact::new(
-            voxel.average_colour.into(),
-            ftl,
-            ftr,
-            fbl,
-            fbr,
-            btl,
-            btr,
-            bbl,
-            bbr,
-            voxel.vtype as u32,
-        );
+        let compact_voxel =
+            VoxelCompact::new(voxel.average_colour.into(), children, voxel.vtype as u32);
         *acc.get_mut(self_index as usize).unwrap() = compact_voxel;
 
         // Maintain a sorted list of voxels to explore.
@@ -301,14 +255,8 @@ pub fn generate_recursive_voxel_octree(
             }
         };
 
-        let ftl = pop_node_option(&mut sum_colour);
-        let ftr = pop_node_option(&mut sum_colour);
-        let fbl = pop_node_option(&mut sum_colour);
-        let fbr = pop_node_option(&mut sum_colour);
-        let btl = pop_node_option(&mut sum_colour);
-        let btr = pop_node_option(&mut sum_colour);
-        let bbl = pop_node_option(&mut sum_colour);
-        let bbr = pop_node_option(&mut sum_colour);
+        // Build a random voxel for each sub-voxel.
+        let children = arr![pop_node_option(&mut sum_colour); 8];
 
         // Ensure that the sum count is never still 0.
         sum_count = sum_count.max(1.);
@@ -316,14 +264,7 @@ pub fn generate_recursive_voxel_octree(
         stats.voxel_count += 1;
         Voxel {
             average_colour: sum_colour / sum_count,
-            node_ftl: ftl,
-            node_ftr: ftr,
-            node_fbl: fbl,
-            node_fbr: fbr,
-            node_btl: btl,
-            node_btr: btr,
-            node_bbl: bbl,
-            node_bbr: bbr,
+            children,
             vtype: VoxelType::Complex,
             id: stats.voxel_count,
         }
@@ -394,29 +335,53 @@ pub fn octree_scale_and_collision_of_point(
                 if p.x > 0.0 {
                     if p.y > 0.0 {
                         if p.z > 0.0 {
-                            search_graph(p - BTR_CELL, voxel.node_btr)
+                            search_graph(
+                                p - BTR_CELL,
+                                voxel.children[SubVoxel::BackTopRight as usize],
+                            )
                         } else {
-                            search_graph(p - FTR_CELL, voxel.node_ftr)
+                            search_graph(
+                                p - FTR_CELL,
+                                voxel.children[SubVoxel::FrontTopRight as usize],
+                            )
                         }
                     } else {
                         if p.z > 0.0 {
-                            search_graph(p - BBR_CELL, voxel.node_bbr)
+                            search_graph(
+                                p - BBR_CELL,
+                                voxel.children[SubVoxel::BackBottomRight as usize],
+                            )
                         } else {
-                            search_graph(p - FBR_CELL, voxel.node_fbr)
+                            search_graph(
+                                p - FBR_CELL,
+                                voxel.children[SubVoxel::FrontBottomRight as usize],
+                            )
                         }
                     }
                 } else {
                     if p.y > 0.0 {
                         if p.z > 0.0 {
-                            search_graph(p - BTL_CELL, voxel.node_btl)
+                            search_graph(
+                                p - BTL_CELL,
+                                voxel.children[SubVoxel::BackTopLeft as usize],
+                            )
                         } else {
-                            search_graph(p - FTL_CELL, voxel.node_ftl)
+                            search_graph(
+                                p - FTL_CELL,
+                                voxel.children[SubVoxel::FrontTopLeft as usize],
+                            )
                         }
                     } else {
                         if p.z > 0.0 {
-                            search_graph(p - BBL_CELL, voxel.node_bbl)
+                            search_graph(
+                                p - BBL_CELL,
+                                voxel.children[SubVoxel::BackBottomLeft as usize],
+                            )
                         } else {
-                            search_graph(p - FBL_CELL, voxel.node_fbl)
+                            search_graph(
+                                p - FBL_CELL,
+                                voxel.children[SubVoxel::FrontBottomLeft as usize],
+                            )
                         }
                     }
                 }

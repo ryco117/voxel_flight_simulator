@@ -6,6 +6,7 @@ license = "GPL-3.0+"
 
 [dependencies]
 anyhow = "1.0.66"
+arr_macro = "0.2.1"
 bytemuck = "1.13.1"
 cgmath = { version = "0.18.0", features = ["swizzle"] }
 dirs = "5.0.1"
