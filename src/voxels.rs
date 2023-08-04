@@ -100,7 +100,7 @@ impl VoxelCompact {
 fn compact_octree_from_root(root_voxel: Voxel, voxel_count: u32) -> Vec<VoxelCompact> {
     struct BfsVoxel {
         pub voxel: Box<Voxel>,
-        pub parent_list: Vec<u32>, // Todo: Use an immutable singly linked list for efficiency.
+        pub parent_list: Vec<u32>,
     }
     fn breadth_first_search_octree(
         mut acc: Vec<VoxelCompact>,

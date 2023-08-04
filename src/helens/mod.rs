@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use vulkano::{
     command_buffer::{
-        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder,
-        CommandBufferInheritanceInfo, CommandBufferUsage, RenderPassBeginInfo,
-        SecondaryAutoCommandBuffer, SubpassContents,
+        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
+        AutoCommandBufferBuilder, CommandBufferInheritanceInfo, CommandBufferUsage,
+        RenderPassBeginInfo, SecondaryAutoCommandBuffer, SubpassContents,
     },
     descriptor_set::{allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet},
     device::{Device, Queue},
@@ -40,7 +40,7 @@ impl Engine {
             memory: Arc::new(StandardMemoryAllocator::new_default(queue.device().clone())),
             command_buffer: StandardCommandBufferAllocator::new(
                 queue.device().clone(),
-                Default::default(),
+                StandardCommandBufferAllocatorCreateInfo::default(),
             ),
             descriptor_set: StandardDescriptorSetAllocator::new(queue.device().clone()),
         };
