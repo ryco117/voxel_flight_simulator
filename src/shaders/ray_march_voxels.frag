@@ -50,7 +50,7 @@ const float goalRadiusSquared = 0.75;
 const vec4 fogColour = vec4(0.42, 0.525, 0.45, 1.0);
 const vec4 skyColour = vec4(0.08, 0.2, 0.75, 1.0);
 const vec4 groundColour = vec4(0.2, 0.08, 0.08, 1.0);
-const float ambientStrength = 0.45;
+const float ambientStrength = 0.5;
 const vec3 lightColor = vec3(0.85);
 const vec3 ambientLight = ambientStrength * lightColor;
 

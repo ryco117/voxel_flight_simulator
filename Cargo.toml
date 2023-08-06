@@ -19,6 +19,7 @@ vulkano-shaders = "0.33.0"
 vulkano-win = "0.33.0"
 vulkano-util = "0.33.0"
 winit = "0.28.3"
+fast_loaded_dice_roller = { version = "0.1.2", features = ["rand"] }
 
 [profile.release]
 lto = true

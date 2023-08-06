@@ -1,3 +1,5 @@
 .cargo/
 .vscode/
 target/
+.gitignore
+Cargo.lock

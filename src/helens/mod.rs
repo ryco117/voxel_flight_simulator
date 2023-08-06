@@ -73,6 +73,7 @@ impl Engine {
         )
     }
 
+    // Get subpass for the GUI overlay.
     pub fn gui_pass(&self) -> Subpass {
         Subpass::from(self.render_pass().clone(), 1).unwrap()
     }

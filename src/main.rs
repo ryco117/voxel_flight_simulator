@@ -43,6 +43,7 @@ struct App {
     pub last_draw_time: Option<Instant>,
     pub log_file: LogFile,
     pub overlay: Overlay,
+    pub random: voxels::RandomFloats,
     pub voxel_buffer: Subbuffer<[VoxelCompact]>,
     pub window_manager: VulkanoWindows,
 }
@@ -217,9 +218,16 @@ impl App {
         // Create a log file for app convenience.
         let mut log_file = LogFile::default();
 
+        // Create the RNG to be used for voxel-world generation.
+        let mut random = voxels::RandomFloats::default();
+
         // Initialize storage buffer with random voxel-octree data.
-        let (descriptor_set, voxel_buffer) =
-            create_random_world(engine.allocators(), engine.pipeline(), &mut log_file);
+        let (descriptor_set, voxel_buffer) = create_random_world(
+            engine.allocators(),
+            &mut random,
+            engine.pipeline(),
+            &mut log_file,
+        );
 
         // Create an initial game state.
         let game_state = game::State::default();
@@ -234,6 +242,7 @@ impl App {
                 last_draw_time: None,
                 log_file,
                 overlay,
+                random,
                 voxel_buffer,
                 window_manager,
             },
@@ -243,6 +252,7 @@ impl App {
     pub fn new_random_world(&mut self) {
         let (descriptor_set, voxel_buffer) = create_random_world(
             self.engine.allocators(),
+            &mut self.random,
             self.engine.pipeline(),
             &mut self.log_file,
         );
@@ -538,11 +548,12 @@ impl App {
 
 fn create_random_world(
     allocators: &Allocators,
+    random: &mut voxels::RandomFloats,
     pipeline: &Arc<GraphicsPipeline>,
     log_file: &mut LogFile,
 ) -> (Arc<PersistentDescriptorSet>, Subbuffer<[VoxelCompact]>) {
     // Generate a random voxel-octree.
-    let (voxel_octree, stats) = voxels::generate_recursive_voxel_octree(256, 10);
+    let (voxel_octree, stats) = voxels::generate_recursive_voxel_octree(random, 256, 10);
     log_file.log(
         format!(
             "Voxel Count: {:?}, Portal Count: {:?}\n",

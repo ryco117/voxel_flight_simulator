@@ -35,6 +35,7 @@ pub struct Run {
 }
 
 // State of the keyboard inputs relevant to the game.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Default)]
 pub struct Keyboard {
     pub up: bool,

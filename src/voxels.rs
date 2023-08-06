@@ -1,7 +1,13 @@
 use arr_macro::arr;
 use bytemuck::{Pod, Zeroable};
 use cgmath::{InnerSpace, Vector3, Vector4, Zero};
-use rand::distributions::{Distribution, Uniform};
+use rand::{
+    distributions::{Distribution, Uniform},
+    rngs::StdRng,
+    SeedableRng,
+};
+
+use fast_loaded_dice_roller as fldr;
 
 // The types of reference that a voxel can have to its child voxels.
 enum GraphRef {
@@ -11,22 +17,12 @@ enum GraphRef {
 }
 
 // The types of voxels that can be used.
+#[derive(Clone, Copy)]
 enum VoxelType {
     Complex = 0,
     Colour,
     Portal,
     Mirror,
-}
-
-enum SubVoxel {
-    FrontTopLeft = 0,
-    FrontTopRight,
-    FrontBottomLeft,
-    FrontBottomRight,
-    BackTopLeft,
-    BackTopRight,
-    BackBottomLeft,
-    BackBottomRight,
 }
 
 struct Voxel {
@@ -155,18 +151,23 @@ pub struct OctreeStats {
 
 // Helper struct for creating random floats uniformly in the range [0, 1).
 pub struct RandomFloats {
-    random: rand::rngs::ThreadRng,
+    leaf_after_portal_depth: fldr::Generator,
+    leaf_before_portal_depth: fldr::Generator,
+    fair_coin: fldr::rand::RngCoin<StdRng>,
+
+    random: rand::rngs::StdRng,
     dist: Uniform<f32>,
 }
 
 // Generate a random voxel-octree stored in a contiguous array.
 pub fn generate_recursive_voxel_octree(
+    random: &mut RandomFloats,
     desired_voxel_count: u32,
     desired_portal_count: u32,
 ) -> (Vec<VoxelCompact>, OctreeStats) {
     // Helper to generate a random voxel-colour.
     fn random_colour(random: &mut RandomFloats) -> Vector4<f32> {
-        Vector4::new(random.sample(), random.sample(), random.sample(), 1.)
+        Vector4::new(random.samplef(), random.samplef(), random.samplef(), 1.)
     }
 
     // Helper to generate a random leaf-voxel.
@@ -175,15 +176,13 @@ pub fn generate_recursive_voxel_octree(
         stats.voxel_count += 1;
         let id = stats.voxel_count;
 
-        if depth >= MINIMUM_GOAL_DEPTH {
-            let r = random.sample();
-            if r > 0.16 {
-                Voxel {
-                    average_colour: colour,
-                    id,
-                    ..LEAF_VOXEL
-                }
-            } else if r > 0.08 {
+        match random.sample_leaf(depth >= MINIMUM_GOAL_DEPTH) {
+            VoxelType::Colour => Voxel {
+                average_colour: colour,
+                id,
+                ..LEAF_VOXEL
+            },
+            VoxelType::Portal => {
                 stats.goal_count += 1;
                 Voxel {
                     average_colour: colour,
@@ -191,35 +190,20 @@ pub fn generate_recursive_voxel_octree(
                     id,
                     ..LEAF_VOXEL
                 }
-            } else {
-                Voxel {
-                    average_colour: colour,
-                    vtype: VoxelType::Mirror,
-                    id,
-                    ..LEAF_VOXEL
-                }
             }
-        } else {
-            if random.sample() > 0.1 {
-                Voxel {
-                    average_colour: colour,
-                    id,
-                    ..LEAF_VOXEL
-                }
-            } else {
-                Voxel {
-                    average_colour: colour,
-                    vtype: VoxelType::Mirror,
-                    id,
-                    ..LEAF_VOXEL
-                }
-            }
+            VoxelType::Mirror => Voxel {
+                average_colour: colour,
+                vtype: VoxelType::Mirror,
+                id,
+                ..LEAF_VOXEL
+            },
+            VoxelType::Complex => unreachable!(),
         }
     }
 
     // Get a random recursion depth from an exponential distribution.
     fn random_recurse(random: &mut RandomFloats, max_depth: u32) -> u32 {
-        let roll = 1.0 - random.sample();
+        let roll = 1.0 - random.samplef();
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         (roll.log(1.8).abs() as u32).min(max_depth)
@@ -230,7 +214,7 @@ pub fn generate_recursive_voxel_octree(
         let mut sum_colour = Vector4::zero();
         let mut sum_count: f32 = 0.;
         let mut pop_node_option = |colour: &mut Vector4<f32>| -> GraphRef {
-            let random_type = random.sample();
+            let random_type = random.samplef();
             // TODO: Change the moving target function to better approach the desired voxel count. Current is tuned for 256.
             let moving_target = 1. / (0.65 * depth as f32 + 1.);
             if random_type < 0.45 {
@@ -270,7 +254,6 @@ pub fn generate_recursive_voxel_octree(
         }
     }
 
-    let random = &mut RandomFloats::default();
     loop {
         // Loop through random graphs until one satisfies all conditions.
         let mut stats = OctreeStats::default();
@@ -319,72 +302,32 @@ pub fn octree_scale_and_collision_of_point(
                     Intersection::Empty(scale)
                 }
             } else {
-                // The center of each sub-voxel relative to the parent.
-                const BTR_CELL: Vector3<f32> = Vector3::new(0.5, 0.5, 0.5);
-                const FTR_CELL: Vector3<f32> = Vector3::new(0.5, 0.5, -0.5);
-                const BBR_CELL: Vector3<f32> = Vector3::new(0.5, -0.5, 0.5);
-                const FBR_CELL: Vector3<f32> = Vector3::new(0.5, -0.5, -0.5);
-                const BTL_CELL: Vector3<f32> = Vector3::new(-0.5, 0.5, 0.5);
-                const FTL_CELL: Vector3<f32> = Vector3::new(-0.5, 0.5, -0.5);
-                const BBL_CELL: Vector3<f32> = Vector3::new(-0.5, -0.5, 0.5);
-                const FBL_CELL: Vector3<f32> = Vector3::new(-0.5, -0.5, -0.5);
+                // The center of each sub-voxel (cell) relative to the parent.
+                // The order here must be aligned with the subvoxel-order in the `ray_march_voxels.frag` shader.
+                const CELL_CENTERS: [Vector3<f32>; 8] = [
+                    Vector3::new(-0.5, 0.5, -0.5),
+                    Vector3::new(0.5, 0.5, -0.5),
+                    Vector3::new(-0.5, -0.5, -0.5),
+                    Vector3::new(0.5, -0.5, -0.5),
+                    Vector3::new(-0.5, 0.5, 0.5),
+                    Vector3::new(0.5, 0.5, 0.5),
+                    Vector3::new(-0.5, -0.5, 0.5),
+                    Vector3::new(0.5, -0.5, 0.5),
+                ];
 
-                let search_graph = |p: Vector3<f32>, index: u32| {
-                    search_graph(scale + scale, iter + 1, p + p, index, octree)
-                };
-                if p.x > 0.0 {
-                    if p.y > 0.0 {
-                        if p.z > 0.0 {
-                            search_graph(
-                                p - BTR_CELL,
-                                voxel.children[SubVoxel::BackTopRight as usize],
-                            )
-                        } else {
-                            search_graph(
-                                p - FTR_CELL,
-                                voxel.children[SubVoxel::FrontTopRight as usize],
-                            )
-                        }
-                    } else {
-                        if p.z > 0.0 {
-                            search_graph(
-                                p - BBR_CELL,
-                                voxel.children[SubVoxel::BackBottomRight as usize],
-                            )
-                        } else {
-                            search_graph(
-                                p - FBR_CELL,
-                                voxel.children[SubVoxel::FrontBottomRight as usize],
-                            )
-                        }
-                    }
-                } else {
-                    if p.y > 0.0 {
-                        if p.z > 0.0 {
-                            search_graph(
-                                p - BTL_CELL,
-                                voxel.children[SubVoxel::BackTopLeft as usize],
-                            )
-                        } else {
-                            search_graph(
-                                p - FTL_CELL,
-                                voxel.children[SubVoxel::FrontTopLeft as usize],
-                            )
-                        }
-                    } else {
-                        if p.z > 0.0 {
-                            search_graph(
-                                p - BBL_CELL,
-                                voxel.children[SubVoxel::BackBottomLeft as usize],
-                            )
-                        } else {
-                            search_graph(
-                                p - FBL_CELL,
-                                voxel.children[SubVoxel::FrontBottomLeft as usize],
-                            )
-                        }
-                    }
-                }
+                // Determine which sub-voxel the point is in by assigning a bit to each axis depending on which side of the axis the point is on.
+                let cell_index = (usize::from(p.z > 0.) << 2)
+                    + (usize::from(p.y <= 0.) << 1)
+                    + usize::from(p.x > 0.);
+
+                // Rescale the point to be relative to the sub-voxel and recurse.
+                search_graph(
+                    scale + scale,
+                    iter + 1,
+                    2. * (p - CELL_CENTERS[cell_index]),
+                    voxel.children[cell_index],
+                    octree,
+                )
             }
         }
     }
@@ -398,14 +341,50 @@ pub fn octree_scale_and_collision_of_point(
 }
 
 impl RandomFloats {
-    pub fn default() -> Self {
-        RandomFloats {
-            random: rand::thread_rng(),
+    // Create a new instance for generating random values for voxel generation.
+    pub fn new(seed: u64) -> Self {
+        let leaf_before_portal_depth = fldr::Generator::new(&[9, 1]);
+        let leaf_after_portal_depth = fldr::Generator::new(&[21, 2, 2]);
+
+        let random = StdRng::seed_from_u64(seed);
+
+        // TODO: Have the fair_coin make its RNG public so that we can make independent samples using the same RNG.
+        let fair_coin = fldr::rand::RngCoin::<StdRng>::new(StdRng::seed_from_u64(seed + 1));
+
+        Self {
+            leaf_after_portal_depth,
+            leaf_before_portal_depth,
+            fair_coin,
+
+            random,
             dist: Uniform::new(0., 1.),
         }
     }
 
-    pub fn sample(&mut self) -> f32 {
+    // Default to a simple time based seed and create instance.
+    pub fn default() -> Self {
+        Self::new(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+    }
+
+    // Sample a random float uniformly between 0 and 1.
+    pub fn samplef(&mut self) -> f32 {
         self.dist.sample(&mut self.random)
+    }
+
+    // Sample a random voxel type depending on the depth of the voxel.
+    fn sample_leaf(&mut self, depth_reached: bool) -> VoxelType {
+        if depth_reached {
+            const LEAVES: [VoxelType; 3] =
+                [VoxelType::Colour, VoxelType::Portal, VoxelType::Mirror];
+            LEAVES[self.leaf_after_portal_depth.sample(&mut self.fair_coin)]
+        } else {
+            const LEAVES: [VoxelType; 2] = [VoxelType::Colour, VoxelType::Mirror];
+            LEAVES[self.leaf_before_portal_depth.sample(&mut self.fair_coin)]
+        }
     }
 }
