@@ -1,11 +1,8 @@
 use arr_macro::arr;
 use bytemuck::{Pod, Zeroable};
 use cgmath::{InnerSpace, Vector3, Vector4, Zero};
-use rand::{
-    distributions::{Distribution, Uniform},
-    rngs::StdRng,
-    SeedableRng,
-};
+use fast_loaded_dice_roller::FairCoin;
+use rand::{rngs::StdRng, SeedableRng};
 
 use fast_loaded_dice_roller as fldr;
 
@@ -149,29 +146,28 @@ pub struct OctreeStats {
     pub voxel_count: u32,
 }
 
-// Helper struct for creating random floats uniformly in the range [0, 1).
-pub struct RandomFloats {
+// Helper struct for creating random floats uniformly in the range [0, 1)
+// and voxel types.
+pub struct RandomOctreeHelper {
+    fair_coin: fldr::rand::RngCoin<StdRng>,
     leaf_after_portal_depth: fldr::Generator,
     leaf_before_portal_depth: fldr::Generator,
-    fair_coin: fldr::rand::RngCoin<StdRng>,
-
-    random: rand::rngs::StdRng,
-    dist: Uniform<f32>,
+    seed: u64,
 }
 
 // Generate a random voxel-octree stored in a contiguous array.
 pub fn generate_recursive_voxel_octree(
-    random: &mut RandomFloats,
+    random: &mut RandomOctreeHelper,
     desired_voxel_count: u32,
     desired_portal_count: u32,
 ) -> (Vec<VoxelCompact>, OctreeStats) {
     // Helper to generate a random voxel-colour.
-    fn random_colour(random: &mut RandomFloats) -> Vector4<f32> {
+    fn random_colour(random: &mut RandomOctreeHelper) -> Vector4<f32> {
         Vector4::new(random.samplef(), random.samplef(), random.samplef(), 1.)
     }
 
     // Helper to generate a random leaf-voxel.
-    fn random_leaf(random: &mut RandomFloats, depth: u32, stats: &mut OctreeStats) -> Voxel {
+    fn random_leaf(random: &mut RandomOctreeHelper, depth: u32, stats: &mut OctreeStats) -> Voxel {
         let colour = random_colour(random);
         stats.voxel_count += 1;
         let id = stats.voxel_count;
@@ -202,7 +198,7 @@ pub fn generate_recursive_voxel_octree(
     }
 
     // Get a random recursion depth from an exponential distribution.
-    fn random_recurse(random: &mut RandomFloats, max_depth: u32) -> u32 {
+    fn random_recurse(random: &mut RandomOctreeHelper, max_depth: u32) -> u32 {
         let roll = 1.0 - random.samplef();
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -210,12 +206,17 @@ pub fn generate_recursive_voxel_octree(
     }
 
     // Recursively form a graph of voxels in a depth-first manner.
-    fn roll_voxel_graph(random: &mut RandomFloats, depth: u32, stats: &mut OctreeStats) -> Voxel {
+    fn roll_voxel_graph(
+        random: &mut RandomOctreeHelper,
+        depth: u32,
+        stats: &mut OctreeStats,
+    ) -> Voxel {
         let mut sum_colour = Vector4::zero();
         let mut sum_count: f32 = 0.;
         let mut pop_node_option = |colour: &mut Vector4<f32>| -> GraphRef {
             let random_type = random.samplef();
             // TODO: Change the moving target function to better approach the desired voxel count. Current is tuned for 256.
+            #[allow(clippy::cast_precision_loss)]
             let moving_target = 1. / (0.65 * depth as f32 + 1.);
             if random_type < 0.45 {
                 // 45% chance of empty node
@@ -269,7 +270,7 @@ pub fn generate_recursive_voxel_octree(
 pub enum Intersection {
     Empty(f32),
     Collision,
-    Portal(u32),
+    Portal { depth: u32, index: u32 },
 }
 
 // Determine where in the octree a point is, and whether it is colliding with a voxel.
@@ -297,7 +298,10 @@ pub fn octree_scale_and_collision_of_point(
                 if p.dot(p) <= GOAL_RADIUS_SQUARED {
                     // Subtract 1 from depth since this function asserts the root as depth zero, others do not.
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    Intersection::Portal((scale.log2() - 1.).max(0.) as u32)
+                    Intersection::Portal {
+                        depth: (scale.log2() - 1.).max(0.) as u32,
+                        index,
+                    }
                 } else {
                     Intersection::Empty(scale)
                 }
@@ -315,7 +319,8 @@ pub fn octree_scale_and_collision_of_point(
                     Vector3::new(0.5, -0.5, 0.5),
                 ];
 
-                // Determine which sub-voxel the point is in by assigning a bit to each axis depending on which side of the axis the point is on.
+                // Determine which sub-voxel the point is in by assigning a bit to each axis and
+                // setting its value depending on which side of the axis the point is on.
                 let cell_index = (usize::from(p.z > 0.) << 2)
                     + (usize::from(p.y <= 0.) << 1)
                     + usize::from(p.x > 0.);
@@ -340,24 +345,21 @@ pub fn octree_scale_and_collision_of_point(
     }
 }
 
-impl RandomFloats {
+impl RandomOctreeHelper {
+    const AFTER_PORTAL_DISTRIBUTION: [usize; 3] = [21, 2, 2];
+    const BEFORE_PORTAL_DISTRIBUTION: [usize; 2] = [9, 1];
+
     // Create a new instance for generating random values for voxel generation.
     pub fn new(seed: u64) -> Self {
-        let leaf_before_portal_depth = fldr::Generator::new(&[9, 1]);
-        let leaf_after_portal_depth = fldr::Generator::new(&[21, 2, 2]);
-
-        let random = StdRng::seed_from_u64(seed);
-
-        // TODO: Have the fair_coin make its RNG public so that we can make independent samples using the same RNG.
-        let fair_coin = fldr::rand::RngCoin::<StdRng>::new(StdRng::seed_from_u64(seed + 1));
+        let leaf_after_portal_depth = fldr::Generator::new(&Self::AFTER_PORTAL_DISTRIBUTION);
+        let leaf_before_portal_depth = fldr::Generator::new(&Self::BEFORE_PORTAL_DISTRIBUTION);
+        let fair_coin = fldr::rand::RngCoin::<StdRng>::new(StdRng::seed_from_u64(seed));
 
         Self {
+            fair_coin,
             leaf_after_portal_depth,
             leaf_before_portal_depth,
-            fair_coin,
-
-            random,
-            dist: Uniform::new(0., 1.),
+            seed,
         }
     }
 
@@ -373,7 +375,13 @@ impl RandomFloats {
 
     // Sample a random float uniformly between 0 and 1.
     pub fn samplef(&mut self) -> f32 {
-        self.dist.sample(&mut self.random)
+        let mut f = 0.;
+        let mut scale = 0.5;
+        for _ in 0..f32::MANTISSA_DIGITS {
+            f += f32::from(self.fair_coin.flip()) * scale;
+            scale *= 0.5;
+        }
+        f
     }
 
     // Sample a random voxel type depending on the depth of the voxel.
@@ -386,5 +394,17 @@ impl RandomFloats {
             const LEAVES: [VoxelType; 2] = [VoxelType::Colour, VoxelType::Mirror];
             LEAVES[self.leaf_before_portal_depth.sample(&mut self.fair_coin)]
         }
+    }
+
+    // Update the fair-coin state to accord with the new seed given. This ensures that setting the
+    // seed will cause all future samples to be deterministic.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.fair_coin = fldr::rand::RngCoin::<StdRng>::new(StdRng::seed_from_u64(seed));
+        self.seed = seed;
+    }
+
+    // Getters.
+    pub fn get_seed(&self) -> u64 {
+        self.seed
     }
 }

@@ -43,7 +43,7 @@ struct App {
     pub last_draw_time: Option<Instant>,
     pub log_file: LogFile,
     pub overlay: Overlay,
-    pub random: voxels::RandomFloats,
+    pub random: voxels::RandomOctreeHelper,
     pub voxel_buffer: Subbuffer<[VoxelCompact]>,
     pub window_manager: VulkanoWindows,
 }
@@ -219,7 +219,7 @@ impl App {
         let mut log_file = LogFile::default();
 
         // Create the RNG to be used for voxel-world generation.
-        let mut random = voxels::RandomFloats::default();
+        let mut random = voxels::RandomOctreeHelper::default();
 
         // Initialize storage buffer with random voxel-octree data.
         let (descriptor_set, voxel_buffer) = create_random_world(
@@ -523,7 +523,7 @@ impl App {
                         self.game.reset_camera();
                         self.game.run = Run::default();
                     }
-                    Intersection::Portal(depth) => {
+                    Intersection::Portal { depth, index } => {
                         let points_gained =
                             u32::from(depth == voxels::MAXIMUM_GOAL_DEPTH) + depth + 1
                                 - voxels::MINIMUM_GOAL_DEPTH;
@@ -536,6 +536,9 @@ impl App {
                             self.game.run.level,
                         ).as_str());
 
+                        // Use the portal taken to seed the RNG for the next world.
+                        self.random
+                            .set_seed(self.random.get_seed() + u64::from(index));
                         self.new_random_world();
 
                         self.game.reset_camera();
@@ -548,7 +551,7 @@ impl App {
 
 fn create_random_world(
     allocators: &Allocators,
-    random: &mut voxels::RandomFloats,
+    random: &mut voxels::RandomOctreeHelper,
     pipeline: &Arc<GraphicsPipeline>,
     log_file: &mut LogFile,
 ) -> (Arc<PersistentDescriptorSet>, Subbuffer<[VoxelCompact]>) {
@@ -556,8 +559,10 @@ fn create_random_world(
     let (voxel_octree, stats) = voxels::generate_recursive_voxel_octree(random, 256, 10);
     log_file.log(
         format!(
-            "Voxel Count: {:?}, Portal Count: {:?}\n",
-            stats.voxel_count, stats.goal_count
+            "Seed: {:?}, Voxel Count: {:?}, Portal Count: {:?}\n",
+            random.get_seed(),
+            stats.voxel_count,
+            stats.goal_count
         )
         .as_str(),
     );
@@ -619,6 +624,7 @@ fn create_updated_overlay(
                     ui.checkbox(&mut overlay.is_visible, "Show overlay");
                 });
 
+            // Create a window for describing the controls.
             {
                 enum HelpWindowEntry {
                     Title(&'static str),
@@ -663,7 +669,7 @@ fn create_updated_overlay(
 
             // Optionally create a window for showing run information.
             if let Some(start_time) = game.run.start {
-                egui::Window::new("Run Info").show(&ctx, |ui| {
+                egui::Window::new("Run").show(&ctx, |ui| {
                     ui.heading(format!("Score: {}", game.run.points));
                     ui.label(format!("Level: {}", game.run.level));
                     ui.label(format!("Time: {:.3}s", start_time.elapsed().as_secs_f32()));

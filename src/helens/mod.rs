@@ -258,6 +258,8 @@ impl AppPipeline {
         )
         .unwrap();
 
+        #[allow(clippy::cast_precision_loss)]
+        let dimensions = [dimensions[0] as f32, dimensions[1] as f32];
         builder
             .push_constants(self.pipeline.layout().clone(), 0, push_constants)
             .bind_pipeline_graphics(self.pipeline.clone())
@@ -265,7 +267,7 @@ impl AppPipeline {
                 0,
                 vec![Viewport {
                     origin: [0.0, 0.0],
-                    dimensions: [dimensions[0] as f32, dimensions[1] as f32],
+                    dimensions,
                     depth_range: 0.0..1.0,
                 }],
             )
