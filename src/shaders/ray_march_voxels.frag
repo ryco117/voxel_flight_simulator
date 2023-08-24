@@ -70,14 +70,13 @@ vec3 rotateByQuaternion(vec3 v, vec4 q) {
 
 vec3 cubeNorm(vec3 t) {
 	vec3 s = abs(t);
-	if(s.x > s.y && s.x > s.z) {
+	if(s.x >= s.y && s.x >= s.z) {
 		return vec3(sign(t.x), 0.0, 0.0);
-	} else if(s.y > s.x && s.y > s.z) {
+	} else if(s.y >= s.x && s.y >= s.z) {
 		return vec3(0.0, sign(t.y), 0.0);
-	} else if(s.z > s.x && s.z > s.y) {
+	} else {
 		return vec3(0.0, 0.0, sign(t.z));
 	}
-	return vec3(0.0);
 }
 
 vec3 projectToOutsideDistance(vec3 t) {
@@ -135,20 +134,10 @@ bool projectToRootVoxel(inout vec3 p, vec3 d, vec3 invD) {
 }
 
 float escapeCubeDistance(vec3 p, vec3 d, vec3 invD) {
-	vec3 s;
-	float t = (unitEpsilon*sign(d.x) - p.x)*invD.x;
-	s = p + t*d;
-	if(abs(s.y) < 1.0 && abs(s.z) < 1.0) {
-		return t;
-	}
-
-	t = (unitEpsilon*sign(d.y) - p.y)*invD.y;
-	s = p + t*d;
-	if(abs(s.x) < 1.0 && abs(s.z) < 1.0) {
-		return t;
-	}
-
-	return (unitEpsilon*sign(d.z) - p.z)*invD.z;
+	// Determine minimum distance to a cube boundary from given position and direction.
+	// Add an additional scaling factor to escape the current cube
+	vec3 s = (unitEpsilon*sign(d) - p)*invD;
+	return min(min(s.x, s.y), s.z);
 }
 
 uint voxelIndex(inout vec3 p, inout float scale, int maxDepth) {
@@ -267,8 +256,13 @@ vec4 escapeColour(vec3 d) {
 	return mix(groundSkyColour, vec4(lightColor, 1.0), clamp(64.0*dot(d, push.light_dir) - 63.0, 0.0, 1.0));
 }
 
-// https://www.shadertoy.com/view/XdXGW8 - Copyright © 2013 Inigo Quilez
-vec3 grad(ivec3 z) {
+// The MIT License
+// Copyright © 2013 Inigo Quilez
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+// https://www.youtube.com/c/InigoQuilez
+// https://iquilezles.org
+// https://www.shadertoy.com/view/XdXGW8
+vec3 iq_inspired_position_noise(ivec3 z) {
     // 2D to 1D  (feel free to replace by some other)
     int n = z.x + z.y*1111 + z.z*5227;
 
@@ -279,21 +273,21 @@ vec3 grad(ivec3 z) {
     // simple random vectors
     return vec3(cos(float(n)), sin(float(n)), 2.0*fract(log(abs(float(n)) + 1.0)) - 1.0);
 }
-float gradient_noise(vec3 p) {
+float iq_inspired_noise(vec3 p) {
     ivec3 i = ivec3(floor(p));
 	vec3 f = fract(p);
 
 	vec3 u = f*f*(3.0 - 2.0*f); // feel free to replace by a quintic smoothstep instead
 
     return mix(
-		mix(mix(dot(grad(i), f),
-				dot(grad(i + ivec3(1, 0, 0)), f - vec3(1.0, 0.0, 0.0)), u.x),
-			mix(dot(grad(i + ivec3(0, 1, 0)), f - vec3(0.0, 1.0, 0.0)), 
-				dot(grad(i + ivec3(1, 1, 0)), f - vec3(1.0, 1.0, 0.0)), u.x), u.y), 
-		mix(mix(dot(grad(i + ivec3(0, 0, 1)), f - vec3(0.0, 0.0, 1.0)),
-				dot(grad(i + ivec3(1, 0, 1)), f - vec3(1.0, 0.0, 1.0)), u.x),
-			mix(dot(grad(i + ivec3(0, 1, 1)), f - vec3(0.0, 1.0, 1.0)), 
-				dot(grad(i + ivec3(1, 1, 1)), f - vec3(1.0, 1.0, 1.0)), u.x), u.y), u.z);
+		mix(mix(dot(iq_inspired_position_noise(i), f),
+				dot(iq_inspired_position_noise(i + ivec3(1, 0, 0)), f - vec3(1.0, 0.0, 0.0)), u.x),
+			mix(dot(iq_inspired_position_noise(i + ivec3(0, 1, 0)), f - vec3(0.0, 1.0, 0.0)),
+				dot(iq_inspired_position_noise(i + ivec3(1, 1, 0)), f - vec3(1.0, 1.0, 0.0)), u.x), u.y),
+		mix(mix(dot(iq_inspired_position_noise(i + ivec3(0, 0, 1)), f - vec3(0.0, 0.0, 1.0)),
+				dot(iq_inspired_position_noise(i + ivec3(1, 0, 1)), f - vec3(1.0, 0.0, 1.0)), u.x),
+			mix(dot(iq_inspired_position_noise(i + ivec3(0, 1, 1)), f - vec3(0.0, 1.0, 1.0)),
+				dot(iq_inspired_position_noise(i + ivec3(1, 1, 1)), f - vec3(1.0, 1.0, 1.0)), u.x), u.y), u.z);
 }
 
 const float minTravel = 0.000005;
@@ -360,6 +354,7 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 					p = q;
 				}
 			} else {
+				// We have hit a mirror voxel. Reflect and continue
 				gradient = cubeNorm(s);
 				p += projectToOutsideDistance(s) * scale;
 
@@ -370,13 +365,13 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 
 					vec3 uv = 32.0*s;
 					mat2 m = mat2(1.6,  1.2, -1.2,  1.6);
-					float mirrorFuzz = 0.5*gradient_noise(uv); uv.xy = m*uv.xy;
-					mirrorFuzz += 0.25*gradient_noise(uv); uv.yz = -(m*uv.yz);
-					mirrorFuzz += 0.125*gradient_noise(uv); uv.zx = m*uv.zx;
-					mirrorFuzz += 0.0625*gradient_noise(uv); uv.yx = -(m*uv.yx);
-					mirrorFuzz += 0.03125*gradient_noise(uv); uv.zy = m*uv.zy;
-					mirrorFuzz += 0.015625*gradient_noise(uv); uv.xz = -(m*uv.xz);
-					mirrorFuzz += 0.0078125*gradient_noise(uv);
+					float mirrorFuzz = 0.5*iq_inspired_noise(uv); uv.xy = m*uv.xy;
+					mirrorFuzz += 0.25*iq_inspired_noise(uv); uv.yz = -(m*uv.yz);
+					mirrorFuzz += 0.125*iq_inspired_noise(uv); uv.zx = m*uv.zx;
+					mirrorFuzz += 0.0625*iq_inspired_noise(uv); uv.yx = -(m*uv.yx);
+					mirrorFuzz += 0.03125*iq_inspired_noise(uv); uv.zy = m*uv.zy;
+					mirrorFuzz += 0.015625*iq_inspired_noise(uv); uv.xz = -(m*uv.xz);
+					mirrorFuzz += 0.0078125*iq_inspired_noise(uv);
 					mirrorFuzz *= 0.16;
 
 					col += col + col + col + vec4(vec3(mirrorFuzz) + phongLighting(voxel.averageColour.xyz, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);

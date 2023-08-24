@@ -23,7 +23,7 @@ pub struct State {
 // Game options.
 pub struct Options {
     pub camera_boost: HoldOrToggle,
-    pub joystick_mode: bool,
+    pub hotas_mode: bool,
 }
 
 // Run state.
@@ -99,7 +99,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             camera_boost: HoldOrToggle::Hold,
-            joystick_mode: false,
+            hotas_mode: false,
         }
     }
 }

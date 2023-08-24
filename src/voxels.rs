@@ -2,7 +2,7 @@ use arr_macro::arr;
 use bytemuck::{Pod, Zeroable};
 use cgmath::{InnerSpace, Vector3, Vector4, Zero};
 use fast_loaded_dice_roller::FairCoin;
-use rand::{rngs::StdRng, SeedableRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 
 use fast_loaded_dice_roller as fldr;
 
@@ -365,12 +365,7 @@ impl RandomOctreeHelper {
 
     // Default to a simple time based seed and create instance.
     pub fn default() -> Self {
-        Self::new(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
+        Self::new(rand::thread_rng().gen())
     }
 
     // Sample a random float uniformly between 0 and 1.

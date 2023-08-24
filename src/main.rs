@@ -5,6 +5,7 @@ mod helens;
 mod voxels;
 
 use cgmath::{Quaternion, Rad, Rotation, Rotation3, Vector3};
+use egui::Context;
 use egui_winit_vulkano::{Gui, GuiConfig};
 use game::{HoldOrToggle, Run, SharedAxis};
 use helens::Allocators;
@@ -45,39 +46,31 @@ struct App {
     pub overlay: Overlay,
     pub random: voxels::RandomOctreeHelper,
     pub voxel_buffer: Subbuffer<[VoxelCompact]>,
-    pub window_manager: VulkanoWindows,
 }
 
 struct Overlay {
-    pub gui: Gui,
     pub is_visible: bool,
     pub last_cursor_movement: Instant,
+    pub seed_string: String,
 }
 
 fn main() {
     // Initialize the app window, engine, and game state.
-    let (event_loop, mut app) = App::new();
+    let (mut app, event_loop, mut gui, mut window_manager) = App::new();
 
     // Run event loop until app exits.
     event_loop.run(move |event, _, control_flow| {
-        let window_size = app
-            .window_manager
-            .get_primary_renderer()
-            .unwrap()
-            .window_size();
+        let window_size = window_manager.get_primary_renderer().unwrap().window_size();
         if window_size.contains(&0.0f32) {
             return;
         }
         match event {
             Event::WindowEvent { event, .. } => {
                 // Update Egui integration so the UI works!
-                let pass_events_to_game = !app.overlay.gui.update(&event);
+                let pass_events_to_game = !gui.update(&event);
                 match event {
                     WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                        app.window_manager
-                            .get_primary_renderer_mut()
-                            .unwrap()
-                            .resize();
+                        window_manager.get_primary_renderer_mut().unwrap().resize();
                     }
                     WindowEvent::CloseRequested => {
                         *control_flow = ControlFlow::Exit;
@@ -92,7 +85,12 @@ fn main() {
                         ..
                     } => {
                         if pass_events_to_game {
-                            app.handle_keyboard_inputs(keycode, state, control_flow);
+                            app.handle_keyboard_inputs(
+                                keycode,
+                                state,
+                                &mut window_manager,
+                                control_flow,
+                            );
                         }
                     }
                     WindowEvent::CursorMoved { .. } => {
@@ -111,7 +109,7 @@ fn main() {
                 .as_secs_f32();
                 app.last_draw_time = Some(Instant::now());
 
-                if let Some(window) = app.window_manager.get_primary_window() {
+                if let Some(window) = window_manager.get_primary_window() {
                     const CURSOR_WAIT_TO_HIDE_DURATION: f32 = 2.;
                     window.set_cursor_visible(
                         app.overlay.last_cursor_movement.elapsed().as_secs_f32()
@@ -126,9 +124,8 @@ fn main() {
                 app.update_player_state(delta_time);
 
                 // Get secondary command buffer for rendering GUI.
-                let renderer = app.window_manager.get_primary_renderer_mut().unwrap();
-                let gui_command_buffer =
-                    create_updated_overlay(&mut app.overlay, &mut app.game, renderer);
+                let renderer = window_manager.get_primary_renderer_mut().unwrap();
+                let gui_command_buffer = app.create_updated_overlay(&mut gui, renderer);
 
                 // Render main app with overlay from GUI.
                 let push_constants = {
@@ -156,7 +153,7 @@ fn main() {
                 renderer.present(after_future, true);
             }
             Event::MainEventsCleared => {
-                app.window_manager
+                window_manager
                     .get_primary_renderer()
                     .unwrap()
                     .window()
@@ -168,7 +165,7 @@ fn main() {
 }
 
 impl App {
-    pub fn new() -> (EventLoop<()>, Self) {
+    pub fn new() -> (Self, EventLoop<()>, Gui, VulkanoWindows) {
         // Winit event loop.
         let event_loop = EventLoop::new();
 
@@ -196,30 +193,32 @@ impl App {
         // Initialize standalone engine.
         let engine = helens::Engine::new(context.graphics_queue(), image_format);
 
+        // Create the RNG to be used for voxel-world generation.
+        let mut random = voxels::RandomOctreeHelper::default();
+
+        // Create GUI manager that will render as a subpass of our render pass.
+        let gui = Gui::new_with_subpass(
+            &event_loop,
+            renderer.surface(),
+            renderer.graphics_queue(),
+            engine.gui_pass(),
+            GuiConfig {
+                preferred_format: Some(renderer.swapchain_format()),
+                ..GuiConfig::default()
+            },
+        );
+
+        // Create manager for the GUI overlay and state.
         let overlay = {
-            // Create GUI manager that will render as a subpass of our managed render pass.
-            let gui = Gui::new_with_subpass(
-                &event_loop,
-                renderer.surface(),
-                renderer.graphics_queue(),
-                engine.gui_pass(),
-                GuiConfig {
-                    preferred_format: Some(renderer.swapchain_format()),
-                    ..GuiConfig::default()
-                },
-            );
             Overlay {
-                gui,
                 is_visible: SHOW_OVERLAY_AT_LAUNCH,
                 last_cursor_movement: Instant::now(),
+                seed_string: random.get_seed().to_string(),
             }
         };
 
         // Create a log file for app convenience.
         let mut log_file = LogFile::default();
-
-        // Create the RNG to be used for voxel-world generation.
-        let mut random = voxels::RandomOctreeHelper::default();
 
         // Initialize storage buffer with random voxel-octree data.
         let (descriptor_set, voxel_buffer) = create_random_world(
@@ -233,7 +232,6 @@ impl App {
         let game_state = game::State::default();
 
         (
-            event_loop,
             App {
                 app_start_time: Instant::now(),
                 descriptor_set,
@@ -244,12 +242,21 @@ impl App {
                 overlay,
                 random,
                 voxel_buffer,
-                window_manager,
             },
+            event_loop,
+            gui,
+            window_manager,
         )
     }
 
-    pub fn new_random_world(&mut self) {
+    pub fn new_random_world(&mut self, world_seed: u64) {
+        // Ensure that creating a new world always requires updating to a new seed.
+        self.random.set_seed(world_seed);
+
+        // Update the overlay with the new seed.
+        self.overlay.seed_string = world_seed.to_string();
+
+        // Create GPU buffer and descriptor set for new world.
         let (descriptor_set, voxel_buffer) = create_random_world(
             self.engine.allocators(),
             &mut self.random,
@@ -264,6 +271,7 @@ impl App {
         &mut self,
         keycode: VirtualKeyCode,
         state: ElementState,
+        window_manager: &mut VulkanoWindows,
         control_flow: &mut ControlFlow,
     ) {
         let mut game_starting_event = false;
@@ -271,7 +279,7 @@ impl App {
             ElementState::Pressed => match keycode {
                 VirtualKeyCode::Escape => {
                     // If fullscreen then leave fullscreen, else exit the app.
-                    let window = self.window_manager.get_primary_window().unwrap();
+                    let window = window_manager.get_primary_window().unwrap();
                     match window.fullscreen() {
                         None => *control_flow = ControlFlow::Exit,
                         Some(_) => {
@@ -280,13 +288,14 @@ impl App {
                     }
                 }
                 VirtualKeyCode::F5 => {
-                    self.new_random_world();
+                    use rand::Rng;
+                    self.new_random_world(rand::thread_rng().gen());
                     self.game.run = Run::default();
                     self.game.reset_camera();
                 }
                 VirtualKeyCode::F11 => {
                     // Toggle fullscreen.
-                    let window = self.window_manager.get_primary_window().unwrap();
+                    let window = window_manager.get_primary_window().unwrap();
                     match window.fullscreen() {
                         None => {
                             window.set_fullscreen(Some(Fullscreen::Borderless(None)));
@@ -400,13 +409,13 @@ impl App {
                     processed = true;
                 }
                 EventType::ButtonChanged(gilrs::Button::RightTrigger2, val, _)
-                    if self.game.options.joystick_mode =>
+                    if self.game.options.hotas_mode =>
                 {
                     self.game.gamepad.yaw = Single(val + val - 1.);
                     processed = true;
                 }
                 EventType::ButtonPressed(gilrs::Button::LeftTrigger, _)
-                    if !self.game.options.joystick_mode =>
+                    if !self.game.options.hotas_mode =>
                 {
                     self.game.gamepad.yaw = if let Split(_, right) = self.game.gamepad.yaw {
                         Split(1., right)
@@ -416,7 +425,7 @@ impl App {
                     processed = true;
                 }
                 EventType::ButtonReleased(gilrs::Button::LeftTrigger, _)
-                    if !self.game.options.joystick_mode =>
+                    if !self.game.options.hotas_mode =>
                 {
                     self.game.gamepad.yaw = if let Split(_, right) = self.game.gamepad.yaw {
                         Split(0., right)
@@ -426,7 +435,7 @@ impl App {
                     processed = true;
                 }
                 EventType::ButtonPressed(gilrs::Button::RightTrigger, _)
-                    if !self.game.options.joystick_mode =>
+                    if !self.game.options.hotas_mode =>
                 {
                     self.game.gamepad.yaw = if let Split(left, _) = self.game.gamepad.yaw {
                         Split(left, 1.)
@@ -436,7 +445,7 @@ impl App {
                     processed = true;
                 }
                 EventType::ButtonReleased(gilrs::Button::RightTrigger, _)
-                    if !self.game.options.joystick_mode =>
+                    if !self.game.options.hotas_mode =>
                 {
                     self.game.gamepad.yaw = if let Split(left, _) = self.game.gamepad.yaw {
                         Split(left, 0.)
@@ -530,22 +539,135 @@ impl App {
                         self.game.run.points += points_gained;
                         self.game.run.level += 1;
 
-                        self.log_file.log(format!("{:.3}s: Portal depth: {depth}, +{points_gained}, Score: {}, Levels: {}\n\n",
+                        self.log_file.log(format!("{:.3}s: Portal depth: {depth}, +{points_gained}, Score: {}, Levels: {}\n",
                             self.app_start_time.elapsed().as_secs_f32(),
                             self.game.run.points,
                             self.game.run.level,
                         ).as_str());
 
                         // Use the portal taken to seed the RNG for the next world.
-                        self.random
-                            .set_seed(self.random.get_seed() + u64::from(index));
-                        self.new_random_world();
+                        self.new_random_world(self.random.get_seed() + u64::from(index));
 
                         self.game.reset_camera();
                     }
                 }
             }
         }
+    }
+
+    // Update the internal GUI state and return an optional command buffer to draw the overlay.
+    fn create_updated_overlay(
+        &mut self,
+        gui: &mut Gui,
+        renderer: &mut VulkanoWindowRenderer,
+    ) -> Option<SecondaryAutoCommandBuffer> {
+        // Options window helper.
+        fn options_window(app: &mut App, ctx: &Context) {
+            // Create an Egui window that starts closed.
+            egui::Window::new("Options")
+                .default_open(false)
+                .show(ctx, |ui| {
+                    // Create a toggle for reading inputs as a gamepad or H.O.T.A.S.
+                    ui.checkbox(
+                        &mut app.game.options.hotas_mode,
+                        "Treat gamepad as H.O.T.A.S. stick",
+                    );
+
+                    let mut b = app.game.options.camera_boost != HoldOrToggle::Hold;
+                    if ui.checkbox(&mut b, "Toggle boost").changed() {
+                        app.game.options.camera_boost = match app.game.options.camera_boost {
+                            HoldOrToggle::Hold => HoldOrToggle::Toggle(false),
+                            HoldOrToggle::Toggle(_) => HoldOrToggle::Hold,
+                        };
+                    }
+
+                    ui.checkbox(&mut app.overlay.is_visible, "Show overlay");
+
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut app.overlay.seed_string);
+                        if ui.button("Set seed").clicked() {
+                            if let Ok(seed) = app.overlay.seed_string.parse::<u64>() {
+                                app.new_random_world(seed);
+                                app.game.run = Run::default();
+                                app.game.reset_camera();
+                            }
+                        }
+                    });
+                });
+        }
+
+        // Help window helper.
+        fn help_window(ctx: &Context) {
+            // Helper enum for creating a grid of controls.
+            enum HelpWindowEntry {
+                Title(&'static str),
+                Item(&'static str, &'static str),
+                Empty(),
+            }
+            use HelpWindowEntry::{Empty, Item, Title};
+
+            // Create an Egui window that starts closed.
+            egui::Window::new("Help")
+                .default_open(false)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        // TODO: Complete controls list.
+                        let controls_list = [
+                            Title("App-Window Management"),
+                            Item("F11", "Toggle window fullscreen"),
+                            Item("ESC", "If fullscreen, then enter windowed mode. Else, close the application"),
+                            Item("O", "Toggle visibility of the app overlay"),
+                            Empty(),
+                            Title("Game"),
+                            Item("F5", "Generate a new random world and reset game"),
+                        ];
+                        egui::Grid::new("scheme_index_grid").show(ui, |ui| {
+                            for entry in controls_list {
+                                match entry {
+                                    Empty() => {},
+                                    Item(key, desc) => {
+                                        ui.vertical_centered(|ui| ui.label(egui::RichText::new(key).monospace()));
+                                        ui.label(desc);
+                                    }
+                                    Title(title) => {
+                                        ui.separator();
+                                        ui.heading(title);
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    });
+                });
+        }
+
+        // If the overlay is not enabled, return no command buffer.
+        if !self.overlay.is_visible {
+            return None;
+        }
+
+        // Update the GUI state.
+        gui.immediate_ui(|gui| {
+            let ctx = gui.context();
+
+            // Create a window for setting options.
+            options_window(self, &ctx);
+
+            // Create a window for describing the controls.
+            help_window(&ctx);
+
+            // Optionally create a window for showing run information.
+            if let Some(start_time) = self.game.run.start {
+                egui::Window::new("Run").show(&ctx, |ui| {
+                    ui.heading(format!("Score: {}", self.game.run.points));
+                    ui.label(format!("Level: {}", self.game.run.level));
+                    ui.label(format!("Time: {:.3}s", start_time.elapsed().as_secs_f32()));
+                });
+            }
+        });
+
+        // Return a command buffer to draw the GUI.
+        Some(gui.draw_on_subpass_image(renderer.swapchain_image_size()))
     }
 }
 
@@ -596,101 +718,9 @@ fn create_random_world(
     )
 }
 
-// Update the internal GUI state and return an optional command buffer to draw the overlay.
-fn create_updated_overlay(
-    overlay: &mut Overlay,
-    game: &mut game::State,
-    renderer: &mut VulkanoWindowRenderer,
-) -> Option<SecondaryAutoCommandBuffer> {
-    if overlay.is_visible {
-        // Update the GUI state.
-        overlay.gui.immediate_ui(|gui| {
-            let ctx = gui.context();
-
-            // Create a window for setting game options.
-            egui::Window::new("Options")
-                .default_open(false)
-                .show(&ctx, |ui| {
-                    ui.checkbox(&mut game.options.joystick_mode, "Treat gamepad as joystick");
-
-                    let mut b = game.options.camera_boost != HoldOrToggle::Hold;
-                    if ui.checkbox(&mut b, "Toggle boost").changed() {
-                        game.options.camera_boost = match game.options.camera_boost {
-                            HoldOrToggle::Hold => HoldOrToggle::Toggle(false),
-                            HoldOrToggle::Toggle(_) => HoldOrToggle::Hold,
-                        };
-                    }
-
-                    ui.checkbox(&mut overlay.is_visible, "Show overlay");
-                });
-
-            // Create a window for describing the controls.
-            {
-                enum HelpWindowEntry {
-                    Title(&'static str),
-                    Item(&'static str, &'static str),
-                    Empty(),
-                }
-                use HelpWindowEntry::{Empty, Item, Title};
-
-                egui::Window::new("Help")
-                    .default_open(false)
-                    .show(&ctx, |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            // TODO: Complete controls list.
-                            let controls_list = [
-                                Title("App-Window Management"),
-                                Item("F11", "Toggle window fullscreen"),
-                                Item("ESC", "If fullscreen, then enter windowed mode. Else, close the application"),
-                                Item("O", "Toggle visibility of the app overlay"),
-                                Empty(),
-                                Title("Game"),
-                                Item("F5", "Generate a new random world and reset game"),
-                            ];
-                            egui::Grid::new("scheme_index_grid").show(ui, |ui| {
-                                for entry in controls_list {
-                                    match entry {
-                                        Empty() => {},
-                                        Item(key, desc) => {
-                                            ui.vertical_centered(|ui| ui.label(egui::RichText::new(key).monospace()));
-                                            ui.label(desc);
-                                        }
-                                        Title(title) => {
-                                            ui.separator();
-                                            ui.heading(title);
-                                        }
-                                    }
-                                    ui.end_row();
-                                }
-                            });
-                        });
-                    });
-            }
-
-            // Optionally create a window for showing run information.
-            if let Some(start_time) = game.run.start {
-                egui::Window::new("Run").show(&ctx, |ui| {
-                    ui.heading(format!("Score: {}", game.run.points));
-                    ui.label(format!("Level: {}", game.run.level));
-                    ui.label(format!("Time: {:.3}s", start_time.elapsed().as_secs_f32()));
-                });
-            }
-        });
-
-        // Return a command buffer to draw the GUI.
-        Some(
-            overlay
-                .gui
-                .draw_on_subpass_image(renderer.swapchain_image_size()),
-        )
-    } else {
-        // The overlay is not enabled, so return no command buffer.
-        None
-    }
-}
-
-// Simple helper to log to an app file and stdout.
+// Simple helper to write logs to an app file and stdout.
 impl LogFile {
+    // Open a log file in the app directory.
     pub fn default() -> Self {
         let file_path = if let Some(p) = dirs::config_local_dir() {
             let dir = p.join(path::Path::new("voxel_flight_simulator"));
@@ -710,6 +740,7 @@ impl LogFile {
         )
     }
 
+    // Write a message to the log file and stdout.
     pub fn log(&mut self, msg: &str) {
         use std::io::Write;
         print!("{msg}");
