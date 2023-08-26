@@ -1,3 +1,6 @@
+// Ensure Windows builds are not console apps
+#![windows_subsystem = "windows"]
+
 use std::{fs::File, path, sync::Arc, time::Instant};
 
 mod game;
@@ -265,6 +268,9 @@ impl App {
         );
         self.descriptor_set = descriptor_set;
         self.voxel_buffer = voxel_buffer;
+
+        // Reset the camera since we never enter a new world at a non-start orientation.
+        self.game.reset_camera();
     }
 
     fn handle_keyboard_inputs(
@@ -289,9 +295,8 @@ impl App {
                 }
                 VirtualKeyCode::F5 => {
                     use rand::Rng;
-                    self.new_random_world(rand::thread_rng().gen());
                     self.game.run = Run::default();
-                    self.game.reset_camera();
+                    self.new_random_world(rand::thread_rng().gen());
                 }
                 VirtualKeyCode::F11 => {
                     // Toggle fullscreen.
@@ -539,6 +544,7 @@ impl App {
                         self.game.run.points += points_gained;
                         self.game.run.level += 1;
 
+                        // Log the state of the run after taking the portal and gaining points.
                         self.log_file.log(format!("{:.3}s: Portal depth: {depth}, +{points_gained}, Score: {}, Levels: {}\n",
                             self.app_start_time.elapsed().as_secs_f32(),
                             self.game.run.points,
@@ -547,8 +553,6 @@ impl App {
 
                         // Use the portal taken to seed the RNG for the next world.
                         self.new_random_world(self.random.get_seed() + u64::from(index));
-
-                        self.game.reset_camera();
                     }
                 }
             }
@@ -573,6 +577,7 @@ impl App {
                         "Treat gamepad as H.O.T.A.S. stick",
                     );
 
+                    // Create an option to either hold or toggle for boost.
                     let mut b = app.game.options.camera_boost != HoldOrToggle::Hold;
                     if ui.checkbox(&mut b, "Toggle boost").changed() {
                         app.game.options.camera_boost = match app.game.options.camera_boost {
@@ -581,15 +586,16 @@ impl App {
                         };
                     }
 
+                    // Create an option to toggle the overlay's visibility.
                     ui.checkbox(&mut app.overlay.is_visible, "Show overlay");
 
+                    // Allow user to view, edit, and set the world seed.
                     ui.horizontal(|ui| {
                         ui.text_edit_singleline(&mut app.overlay.seed_string);
                         if ui.button("Set seed").clicked() {
                             if let Ok(seed) = app.overlay.seed_string.parse::<u64>() {
-                                app.new_random_world(seed);
                                 app.game.run = Run::default();
-                                app.game.reset_camera();
+                                app.new_random_world(seed);
                             }
                         }
                     });
@@ -599,6 +605,7 @@ impl App {
         // Help window helper.
         fn help_window(ctx: &Context) {
             // Helper enum for creating a grid of controls.
+            // Each entry is a row in the grid.
             enum HelpWindowEntry {
                 Title(&'static str),
                 Item(&'static str, &'static str),
@@ -611,25 +618,38 @@ impl App {
                 .default_open(false)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
+                        // Describe the controls-help layout.
                         // TODO: Complete controls list.
                         let controls_list = [
-                            Title("App-Window Management"),
+                            Title("App-Window"),
                             Item("F11", "Toggle window fullscreen"),
                             Item("ESC", "If fullscreen, then enter windowed mode. Else, close the application"),
-                            Item("O", "Toggle visibility of the app overlay"),
+                            Item("o", "Toggle visibility of the app overlay"),
                             Empty(),
                             Title("Game"),
                             Item("F5", "Generate a new random world and reset game"),
+                            Empty(),
+                            Title("Flight"),
+                            Item("UP", "Pitch up"),
+                            Item("DOWN", "Pitch down"),
+                            Item("LEFT", "Roll left"),
+                            Item("RIGHT", "Roll right"),
+                            Item("a", "Yaw left"),
+                            Item("d", "Yaw right"),
+                            Item("SPACE", "Boost"),
                         ];
+
+                        // Grid of controls, showing the buttons and their corresponding actions.
                         egui::Grid::new("scheme_index_grid").show(ui, |ui| {
                             for entry in controls_list {
                                 match entry {
-                                    Empty() => {},
+                                    Empty() => {}
                                     Item(key, desc) => {
                                         ui.vertical_centered(|ui| ui.label(egui::RichText::new(key).monospace()));
                                         ui.label(desc);
                                     }
                                     Title(title) => {
+                                        // Include a separator in the first row and the title in the second.
                                         ui.separator();
                                         ui.heading(title);
                                     }
@@ -722,6 +742,7 @@ fn create_random_world(
 impl LogFile {
     // Open a log file in the app directory.
     pub fn default() -> Self {
+        // Get a reasonable path for the log file.
         let file_path = if let Some(p) = dirs::config_local_dir() {
             let dir = p.join(path::Path::new("voxel_flight_simulator"));
             if !dir.exists() {
@@ -731,6 +752,8 @@ impl LogFile {
         } else {
             path::PathBuf::from("voxel_flight_simulator_log.txt")
         };
+
+        // Open the log file.
         Self(
             std::fs::OpenOptions::new()
                 .create(true)
