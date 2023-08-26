@@ -8,9 +8,11 @@ license = "GPL-3.0+"
 arr_macro = "0.2.1"
 bytemuck = "1.13.1"
 cgmath = { version = "0.18.0", features = ["swizzle"] }
+companion_console = { git = "https://github.com/ryco117/companion_console.git" }
 dirs = "5.0.1"
 egui = "0.21.0"
 egui_winit_vulkano = "0.24.0"
+fast_loaded_dice_roller = { version = "0.1.6", features = ["rand"] }
 gilrs = "0.10.2"
 rand = "0.8.5"
 vulkano = "0.33.0"
@@ -18,7 +20,6 @@ vulkano-shaders = "0.33.0"
 vulkano-util = "0.33.0"
 vulkano-win = "0.33.0"
 winit = "0.28.6"
-fast_loaded_dice_roller = { version = "0.1.6", features = ["rand"] }
 
 [profile.release]
 lto = true

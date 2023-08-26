@@ -31,6 +31,9 @@ use winit::{
     window::Fullscreen,
 };
 
+#[cfg(target_os = "windows")]
+use companion_console::ConsoleState;
+
 const TITLE: &str = "voxel_flight_simulator";
 
 const SHOW_OVERLAY_AT_LAUNCH: bool = true;
@@ -49,6 +52,9 @@ struct App {
     pub overlay: Overlay,
     pub random: voxels::RandomOctreeHelper,
     pub voxel_buffer: Subbuffer<[VoxelCompact]>,
+
+    #[cfg(target_os = "windows")]
+    pub console: ConsoleState,
 }
 
 struct Overlay {
@@ -169,6 +175,10 @@ fn main() {
 
 impl App {
     pub fn new() -> (Self, EventLoop<()>, Gui, VulkanoWindows) {
+        // Create a console window for debugging.
+        #[cfg(target_os = "windows")]
+        let console = ConsoleState::new(false).expect("Could not allocate a console window.");
+
         // Winit event loop.
         let event_loop = EventLoop::new();
 
@@ -245,6 +255,9 @@ impl App {
                 overlay,
                 random,
                 voxel_buffer,
+
+                #[cfg(target_os = "windows")]
+                console,
             },
             event_loop,
             gui,
@@ -347,6 +360,16 @@ impl App {
                 VirtualKeyCode::D => {
                     self.game.keyboard.d = true;
                     game_starting_event = true;
+                }
+
+                // Toggle Windows console visibility.
+                #[cfg(target_os = "windows")]
+                VirtualKeyCode::Return => {
+                    if self.console.is_visible() {
+                        self.console.hide();
+                    } else {
+                        self.console.show();
+                    }
                 }
                 _ => (),
             },
