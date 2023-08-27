@@ -24,7 +24,7 @@ use winit::{
     window::Fullscreen,
 };
 
-#[cfg(target_os = "windows")]
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
 use companion_console::ConsoleState;
 
 // App constants.
@@ -51,14 +51,14 @@ pub struct App {
     pub random: voxels::RandomOctreeHelper,
     pub voxel_buffer: Subbuffer<[VoxelCompact]>,
 
-    #[cfg(target_os = "windows")]
+    #[cfg(all(not(debug_assertions), target_os = "windows"))]
     pub console: ConsoleState,
 }
 
 impl App {
     pub fn new() -> (Self, EventLoop<()>, Gui, VulkanoWindows) {
         // Create a console window for debugging.
-        #[cfg(target_os = "windows")]
+        #[cfg(all(not(debug_assertions), target_os = "windows"))]
         let console = ConsoleState::new(false).expect("Could not allocate a console window.");
 
         // Winit event loop.
@@ -137,7 +137,7 @@ impl App {
                 random,
                 voxel_buffer,
 
-                #[cfg(target_os = "windows")]
+                #[cfg(all(not(debug_assertions), target_os = "windows"))]
                 console,
             },
             event_loop,
@@ -304,7 +304,7 @@ impl App {
                 }
 
                 // Toggle Windows console visibility.
-                #[cfg(target_os = "windows")]
+                #[cfg(all(not(debug_assertions), target_os = "windows"))]
                 VirtualKeyCode::Return => {
                     if self.console.is_visible() {
                         self.console.hide();

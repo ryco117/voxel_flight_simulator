@@ -1,5 +1,5 @@
 // Ensure Windows builds are not console apps
-#![windows_subsystem = "windows"]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use voxel_flight_simulator::App;
 use winit::{
@@ -24,7 +24,7 @@ fn main() {
         }
         match event {
             Event::WindowEvent { event, .. } => {
-                // Update Egui integration so the UI works!
+                // Update the egui with our events so the UI can work!
                 let pass_events_to_game = !gui.update(&event);
                 match event {
                     WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
