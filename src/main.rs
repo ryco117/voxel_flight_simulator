@@ -28,7 +28,7 @@ fn main() {
                 let pass_events_to_game = !gui.update(&event);
                 match event {
                     WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                        window_manager.get_primary_renderer_mut().unwrap().resize();
+                        app.resize(&mut window_manager);
                     }
                     WindowEvent::CloseRequested => {
                         *control_flow = ControlFlow::Exit;

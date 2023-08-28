@@ -9,7 +9,7 @@ use vulkano::{
     descriptor_set::{allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet},
     device::{Device, Queue},
     format::Format,
-    image::{ImageAccess, SampleCount},
+    image::SampleCount,
     memory::allocator::StandardMemoryAllocator,
     pipeline::{
         graphics::{
@@ -35,7 +35,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(queue: &Arc<Queue>, image_format: Format) -> Self {
+    pub fn new(queue: &Arc<Queue>, image_format: Format, viewport: Viewport) -> Self {
         let allocators = Allocators {
             memory: Arc::new(StandardMemoryAllocator::new_default(queue.device().clone())),
             command_buffer: StandardCommandBufferAllocator::new(
@@ -45,7 +45,7 @@ impl Engine {
             descriptor_set: StandardDescriptorSetAllocator::new(queue.device().clone()),
         };
 
-        let render_pass = RenderAppWithOverlay::new(queue.clone(), image_format);
+        let render_pass = RenderAppWithOverlay::new(queue.clone(), image_format, viewport);
 
         Engine {
             allocators,
@@ -78,6 +78,15 @@ impl Engine {
         Subpass::from(self.render_pass().clone(), 1).unwrap()
     }
 
+    // Recreate the graphics pipeline given a new viewport.
+    pub fn recreate_pipeline(&mut self, viewport: Viewport) {
+        self.app_renderer.app_pipeline = AppPipeline::new(
+            &self.app_renderer.queue,
+            self.app_renderer.app_pipeline.subpass.clone(),
+            viewport,
+        );
+    }
+
     // Getters
     pub fn allocators(&self) -> &Allocators {
         &self.allocators
@@ -92,18 +101,18 @@ impl Engine {
 
 /// A render pass which places an incoming image over frame filling it.
 struct RenderAppWithOverlay {
-    queue: Arc<Queue>,
+    pub queue: Arc<Queue>,
     render_pass: Arc<RenderPass>,
-    app_pipeline: AppPipeline,
+    pub app_pipeline: AppPipeline,
 }
 
 impl RenderAppWithOverlay {
-    pub fn new(queue: Arc<Queue>, image_format: Format) -> Self {
+    pub fn new(queue: Arc<Queue>, image_format: Format, viewport: Viewport) -> Self {
         let render_pass = Self::create_render_pass(queue.device().clone(), image_format);
 
-        // Create pipeline for the main app's render pass
+        // Create a graphics pipeline for the app's render pass.
         let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
-        let app_pipeline = AppPipeline::new(queue.clone(), subpass);
+        let app_pipeline = AppPipeline::new(&queue, subpass, viewport);
 
         RenderAppWithOverlay {
             queue,
@@ -151,8 +160,7 @@ impl RenderAppWithOverlay {
         )
         .unwrap();
 
-        // Create framebuffer (Note: attachments must be in same order as render pass creation).
-        let dimensions = image.image().dimensions().width_height();
+        // Create framebuffer. Only one attachment is needed for this app.
         let framebuffer = Framebuffer::new(
             self.render_pass.clone(),
             FramebufferCreateInfo {
@@ -176,7 +184,7 @@ impl RenderAppWithOverlay {
         // Create secondary command buffer to run main app pipeline
         let app_command_buffer =
             self.app_pipeline
-                .draw(allocator, dimensions, push_constants, descriptor_set);
+                .draw(allocator, &self.queue, push_constants, descriptor_set);
 
         // Add app commands to primary command buffer and move to next subpass.
         builder.execute_commands(app_command_buffer).unwrap();
@@ -206,13 +214,13 @@ impl RenderAppWithOverlay {
 }
 
 struct AppPipeline {
-    queue: Arc<Queue>,
-    subpass: Subpass,
+    pub subpass: Subpass,
     pipeline: Arc<GraphicsPipeline>,
 }
 
 impl AppPipeline {
-    pub fn new(queue: Arc<Queue>, subpass: Subpass) -> Self {
+    // Create a graphics pipeline for the main app render pass.
+    pub fn new(queue: &Arc<Queue>, subpass: Subpass, viewport: Viewport) -> Self {
         let device = queue.device();
         let vs = entire_view_vs::load(device.clone()).expect("Failed to create shader module.");
         let fs =
@@ -226,30 +234,25 @@ impl AppPipeline {
                 InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
             )
             .fragment_shader(fs.entry_point("main").unwrap(), ())
-            // Set a dynamic viewport.
-            // TODO: Consider making this fixed since resizing is rare and requires recreating the swapchain anyway.
-            .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+            // Set a fixed viewport.
+            .viewport_state(ViewportState::viewport_fixed_scissor_irrelevant([viewport]))
             .render_pass(subpass.clone())
             .build(device.clone())
             .unwrap();
 
-        AppPipeline {
-            queue,
-            subpass,
-            pipeline,
-        }
+        AppPipeline { subpass, pipeline }
     }
 
     pub fn draw(
         &self,
         allocator: &StandardCommandBufferAllocator,
-        dimensions: [u32; 2],
+        queue: &Arc<Queue>,
         push_constants: ray_march_voxels_fs::Push,
         descriptor_set: Arc<PersistentDescriptorSet>,
     ) -> SecondaryAutoCommandBuffer {
         let mut builder = AutoCommandBufferBuilder::secondary(
             allocator,
-            self.queue.queue_family_index(),
+            queue.queue_family_index(),
             CommandBufferUsage::MultipleSubmit,
             CommandBufferInheritanceInfo {
                 render_pass: Some(self.subpass.clone().into()),
@@ -258,19 +261,9 @@ impl AppPipeline {
         )
         .unwrap();
 
-        #[allow(clippy::cast_precision_loss)]
-        let dimensions = [dimensions[0] as f32, dimensions[1] as f32];
         builder
             .push_constants(self.pipeline.layout().clone(), 0, push_constants)
             .bind_pipeline_graphics(self.pipeline.clone())
-            .set_viewport(
-                0,
-                vec![Viewport {
-                    origin: [0.0, 0.0],
-                    dimensions,
-                    depth_range: 0.0..1.0,
-                }],
-            )
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 self.pipeline.layout().clone(),

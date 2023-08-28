@@ -6,6 +6,7 @@ use crate::voxels::{self, VoxelCompact};
 use cgmath::{Quaternion, Rad, Rotation, Rotation3, Vector3};
 use egui::Context;
 use egui_winit_vulkano::{Gui, GuiConfig};
+use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::SecondaryAutoCommandBuffer,
@@ -85,7 +86,15 @@ impl App {
         let image_format = renderer.swapchain_format();
 
         // Initialize standalone engine.
-        let engine = helens::Engine::new(context.graphics_queue(), image_format);
+        let engine = helens::Engine::new(
+            context.graphics_queue(),
+            image_format,
+            Viewport {
+                origin: [0.; 2],
+                dimensions: renderer.window_size(),
+                depth_range: 0.0..1.,
+            },
+        );
 
         // Create the RNG to be used for voxel-world generation.
         let mut random = voxels::RandomOctreeHelper::default();
@@ -652,6 +661,19 @@ impl App {
 
         // Return a command buffer to draw the GUI.
         Some(gui.draw_on_subpass_image(renderer.swapchain_image_size()))
+    }
+
+    // Handle changes in window size.
+    pub fn resize(&mut self, window_manager: &mut VulkanoWindows) {
+        // Notify the window manager to recreate the swapchain next draw.
+        window_manager.get_primary_renderer_mut().unwrap().resize();
+
+        // Recreate the pipeline with the new viewport.
+        self.engine.recreate_pipeline(Viewport {
+            origin: [0.; 2],
+            dimensions: window_manager.get_primary_renderer().unwrap().window_size(),
+            depth_range: 0.0..1.,
+        });
     }
 }
 
