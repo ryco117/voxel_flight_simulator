@@ -12,14 +12,15 @@ The game can be played using either a keyboard, gamepad controller, or H.O.T.A.S
 | Key | Action |
 |:-:|----------|
 | **App-Window** | - |
+| F1 | Toggle showing the Help window |
 | F11 | Toggle window fullscreen |
 | ESC | If fullscreen, then enter windowed mode. Else, close the application |
-| o | Toggle visibility of the app overlay |
+| o | Toggle showing the Options window |
 | **Game** | - |
 | F5 | Generate a new random world and reset game |
 | **Flight** | - |
-| UP | Pitch up |
-| DOWN | Pitch down |
+| UP | Pitch down |
+| DOWN | Pitch up |
 | LEFT | Roll left |
 | RIGHT | Roll right |
 | a | Yaw left |

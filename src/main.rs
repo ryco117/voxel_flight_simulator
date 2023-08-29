@@ -28,9 +28,11 @@ fn main() {
                 let pass_events_to_game = !gui.update(&event);
                 match event {
                     WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                        // Make app aware of the new window size.
                         app.resize(&mut window_manager);
                     }
                     WindowEvent::CloseRequested => {
+                        // The window has been instructed to close.
                         *control_flow = ControlFlow::Exit;
                     }
                     WindowEvent::KeyboardInput {

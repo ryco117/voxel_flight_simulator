@@ -36,7 +36,8 @@ const CAMERA_BOOST_FACTOR: f32 = 3.5;
 pub struct LogFile(File);
 
 pub struct Overlay {
-    pub is_visible: bool,
+    pub is_options_visible: bool,
+    pub is_help_visible: bool,
     pub last_cursor_movement: Instant,
     pub seed_string: String,
 }
@@ -114,7 +115,8 @@ impl App {
         // Create manager for the GUI overlay and state.
         let overlay = {
             Overlay {
-                is_visible: SHOW_OVERLAY_AT_LAUNCH,
+                is_options_visible: SHOW_OVERLAY_AT_LAUNCH,
+                is_help_visible: SHOW_OVERLAY_AT_LAUNCH,
                 last_cursor_movement: Instant::now(),
                 seed_string: random.get_seed().to_string(),
             }
@@ -251,10 +253,12 @@ impl App {
                     let window = window_manager.get_primary_window().unwrap();
                     match window.fullscreen() {
                         None => *control_flow = ControlFlow::Exit,
-                        Some(_) => {
-                            window.set_fullscreen(None);
-                        }
+                        Some(_) => window.set_fullscreen(None),
                     }
+                }
+                VirtualKeyCode::F1 => {
+                    // Show the Help window.
+                    self.overlay.is_help_visible = !self.overlay.is_help_visible;
                 }
                 VirtualKeyCode::F5 => {
                     use rand::Rng;
@@ -274,8 +278,8 @@ impl App {
                     }
                 }
                 VirtualKeyCode::O => {
-                    // Toggle overlay visibility.
-                    self.overlay.is_visible = !self.overlay.is_visible;
+                    // Toggle Options window visibility.
+                    self.overlay.is_options_visible = !self.overlay.is_options_visible;
                 }
 
                 // Camera controls.
@@ -540,9 +544,14 @@ impl App {
     ) -> Option<SecondaryAutoCommandBuffer> {
         // Options window helper.
         fn options_window(app: &mut App, ctx: &Context) {
+            // Copy the current visibility state to a temporary variable.
+            // This is needed to avoid a borrow conflict on `app`.
+            let mut is_options_visible = app.overlay.is_options_visible;
+
             // Create an Egui window that starts closed.
             egui::Window::new("Options")
                 .default_open(false)
+                .open(&mut is_options_visible)
                 .show(ctx, |ui| {
                     // Create a toggle for reading inputs as a gamepad or H.O.T.A.S.
                     ui.checkbox(
@@ -559,9 +568,6 @@ impl App {
                         };
                     }
 
-                    // Create an option to toggle the overlay's visibility.
-                    ui.checkbox(&mut app.overlay.is_visible, "Show overlay");
-
                     // Allow user to view, edit, and set the world seed.
                     ui.horizontal(|ui| {
                         ui.text_edit_singleline(&mut app.overlay.seed_string);
@@ -573,12 +579,14 @@ impl App {
                         }
                     });
                 });
+
+            // Update the app with the new visibility state.
+            app.overlay.is_options_visible = is_options_visible;
         }
 
         // Help window helper.
-        fn help_window(ctx: &Context) {
-            // Helper enum for creating a grid of controls.
-            // Each entry is a row in the grid.
+        fn help_window(ctx: &Context, is_help_visible: &mut bool) {
+            // Helper enum for creating a grid of controls. Each entry is a row in the grid.
             enum HelpWindowEntry {
                 Title(&'static str),
                 Item(&'static str, &'static str),
@@ -589,22 +597,23 @@ impl App {
             // Create an Egui window that starts closed.
             egui::Window::new("Help")
                 .default_open(false)
+                .open(is_help_visible)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         // Describe the controls-help layout.
-                        // TODO: Complete controls list.
                         let controls_list = [
                             Title("App-Window"),
+                            Item("F1", "Toggle showing this Help window"),
                             Item("F11", "Toggle window fullscreen"),
                             Item("ESC", "If fullscreen, then enter windowed mode. Else, close the application"),
-                            Item("o", "Toggle visibility of the app overlay"),
+                            Item("o", "Toggle showing the Options window"),
                             Empty(),
                             Title("Game"),
                             Item("F5", "Generate a new random world and reset game"),
                             Empty(),
                             Title("Flight"),
-                            Item("UP", "Pitch up"),
-                            Item("DOWN", "Pitch down"),
+                            Item("UP", "Pitch down"),
+                            Item("DOWN", "Pitch up"),
                             Item("LEFT", "Roll left"),
                             Item("RIGHT", "Roll right"),
                             Item("a", "Yaw left"),
@@ -618,7 +627,7 @@ impl App {
                                 match entry {
                                     Empty() => {}
                                     Item(key, desc) => {
-                                        ui.vertical_centered(|ui| ui.label(egui::RichText::new(key).monospace()));
+                                        ui.vertical_centered(|ui| ui.label(egui::RichText::new(key).monospace().strong()));
                                         ui.label(desc);
                                     }
                                     Title(title) => {
@@ -634,8 +643,11 @@ impl App {
                 });
         }
 
-        // If the overlay is not enabled, return no command buffer.
-        if !self.overlay.is_visible {
+        // If no window should be shown, then don't draw anything.
+        if !self.overlay.is_options_visible
+            && !self.overlay.is_help_visible
+            && self.game.run.start.is_none()
+        {
             return None;
         }
 
@@ -647,9 +659,9 @@ impl App {
             options_window(self, &ctx);
 
             // Create a window for describing the controls.
-            help_window(&ctx);
+            help_window(&ctx, &mut self.overlay.is_help_visible);
 
-            // Optionally create a window for showing run information.
+            // Optionally, create a window for showing run information.
             if let Some(start_time) = self.game.run.start {
                 egui::Window::new("Run").show(&ctx, |ui| {
                     ui.heading(format!("Score: {}", self.game.run.points));
