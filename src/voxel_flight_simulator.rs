@@ -766,7 +766,7 @@ impl LogFile {
     // Open a log file in the app directory.
     pub fn default() -> Self {
         // Get a reasonable path for the log file.
-        let file_path = if let Some(p) = dirs::config_local_dir() {
+        let file_path = if let Some(p) = dirs::data_local_dir() {
             let dir = p.join(path::Path::new("voxel_flight_simulator"));
             if !dir.exists() {
                 std::fs::create_dir_all(&dir).expect("Failed to create app directory.");
