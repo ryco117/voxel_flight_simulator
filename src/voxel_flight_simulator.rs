@@ -1,3 +1,21 @@
+/*
+    voxel_flight_simulator - A simple game where you fly around randomly generated, recursive, voxel worlds.
+    Copyright (C) 2023 Ryan Andersen
+
+    voxel_flight_simulator is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    voxel_flight_simulator is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with voxel_flight_simulator. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 use std::{fs::File, path, sync::Arc, time::Instant};
 
 use crate::game::{self, HoldOrToggle, Run, SharedAxis};
@@ -6,13 +24,12 @@ use crate::voxels::{self, VoxelCompact};
 use cgmath::{Quaternion, Rad, Rotation, Rotation3, Vector3};
 use egui::Context;
 use egui_winit_vulkano::{Gui, GuiConfig};
-use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::SecondaryAutoCommandBuffer,
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
     memory::allocator::{AllocationCreateInfo, MemoryUsage},
-    pipeline::{GraphicsPipeline, Pipeline},
+    pipeline::{graphics::viewport::Viewport, GraphicsPipeline, Pipeline},
 };
 use vulkano_util::{
     context::{VulkanoConfig, VulkanoContext},
@@ -496,7 +513,8 @@ impl App {
                         let pitch = (f32::from(self.game.keyboard.up)
                             - f32::from(self.game.keyboard.down)
                             + self.game.gamepad.left_stick[1])
-                            .clamp(-1., 1.);
+                            .clamp(-1., 1.)
+                            * if self.game.options.invert_y { 1. } else { -1. };
                         let yaw = (f32::from(self.game.keyboard.d)
                             - f32::from(self.game.keyboard.a)
                             + match self.game.gamepad.yaw {
@@ -578,6 +596,9 @@ impl App {
                             }
                         }
                     });
+
+                    // Create an option to choose whether the Y axis is inverted.
+                    ui.checkbox(&mut app.game.options.invert_y, "Inverted Y-Axis");
                 });
 
             // Update the app with the new visibility state.
@@ -603,9 +624,13 @@ impl App {
                         // Describe the controls-help layout.
                         let controls_list = [
                             Title("App-Window"),
-                            Item("F1", "Toggle showing this Help window"),
                             Item("F11", "Toggle window fullscreen"),
                             Item("ESC", "If fullscreen, then enter windowed mode. Else, close the application"),
+                            #[cfg(all(not(debug_assertions), target_os = "windows"))]
+                            Item("ENTER", "Toggle the visibility of the output command prompt"),
+                            Empty(),
+                            Title("Overlay-Window"),
+                            Item("F1", "Toggle showing this Help window"),
                             Item("o", "Toggle showing the Options window"),
                             Empty(),
                             Title("Game"),

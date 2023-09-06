@@ -1,3 +1,21 @@
+/*
+    voxel_flight_simulator - A simple game where you fly around randomly generated, recursive, voxel worlds.
+    Copyright (C) 2023 Ryan Andersen
+
+    voxel_flight_simulator is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    voxel_flight_simulator is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with voxel_flight_simulator. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 use std::time::Instant;
 
 use cgmath::{Quaternion, Vector3};
@@ -24,6 +42,7 @@ pub struct State {
 pub struct Options {
     pub camera_boost: HoldOrToggle,
     pub hotas_mode: bool,
+    pub invert_y: bool,
 }
 
 // Run state.
@@ -100,6 +119,7 @@ impl Default for Options {
         Self {
             camera_boost: HoldOrToggle::Hold,
             hotas_mode: false,
+            invert_y: true,
         }
     }
 }
