@@ -24,11 +24,12 @@ use crate::voxels::{self, VoxelCompact};
 use cgmath::{Quaternion, Rad, Rotation, Rotation3, Vector3};
 use egui::Context;
 use egui_winit_vulkano::{Gui, GuiConfig};
+use vulkano::memory::allocator::MemoryTypeFilter;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::SecondaryAutoCommandBuffer,
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
-    memory::allocator::{AllocationCreateInfo, MemoryUsage},
+    memory::allocator::AllocationCreateInfo,
     pipeline::{graphics::viewport::Viewport, GraphicsPipeline, Pipeline},
 };
 use vulkano_util::{
@@ -108,9 +109,9 @@ impl App {
             context.graphics_queue(),
             image_format,
             Viewport {
-                origin: [0.; 2],
-                dimensions: renderer.window_size(),
-                depth_range: 0.0..1.,
+                offset: [0.; 2],
+                extent: renderer.window_size(),
+                depth_range: 0.0..=1.,
             },
         );
 
@@ -123,10 +124,8 @@ impl App {
             renderer.surface(),
             renderer.graphics_queue(),
             engine.gui_pass(),
-            GuiConfig {
-                preferred_format: Some(renderer.swapchain_format()),
-                ..GuiConfig::default()
-            },
+            renderer.swapchain_format(),
+            GuiConfig::default(),
         );
 
         // Create manager for the GUI overlay and state.
@@ -554,120 +553,128 @@ impl App {
         }
     }
 
+    // Options window helper.
+    fn options_window(&mut self, ctx: &Context) {
+        // Copy the current visibility state to a temporary variable.
+        // This is needed to avoid a borrow conflict on `app`.
+        let mut is_options_visible = self.overlay.is_options_visible;
+
+        // Create an Egui window that starts closed.
+        egui::Window::new("Options")
+            .default_open(false)
+            .open(&mut is_options_visible)
+            .show(ctx, |ui| {
+                // Create a toggle for reading inputs as a gamepad or H.O.T.A.S.
+                ui.checkbox(
+                    &mut self.game.options.hotas_mode,
+                    "Treat gamepad as H.O.T.A.S. stick",
+                );
+
+                // Create an option to either hold or toggle for boost.
+                let mut b = self.game.options.camera_boost != HoldOrToggle::Hold;
+                if ui.checkbox(&mut b, "Toggle boost").changed() {
+                    self.game.options.camera_boost = match self.game.options.camera_boost {
+                        HoldOrToggle::Hold => HoldOrToggle::Toggle(false),
+                        HoldOrToggle::Toggle(_) => HoldOrToggle::Hold,
+                    };
+                }
+
+                // Allow user to view, edit, and set the world seed.
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.overlay.seed_string);
+                    if ui.button("Set seed").clicked() {
+                        if let Ok(seed) = self.overlay.seed_string.parse::<u64>() {
+                            self.game.run = Run::default();
+                            self.new_random_world(seed);
+                        }
+                    }
+                });
+
+                // Create an option to choose whether the Y axis is inverted.
+                ui.checkbox(&mut self.game.options.invert_y, "Inverted Y-Axis");
+            });
+
+        // Update the self with the new visibility state.
+        self.overlay.is_options_visible = is_options_visible;
+    }
+
+    // Help window helper.
+    fn help_window(ctx: &Context, is_help_visible: &mut bool) {
+        // Helper enum for creating a grid of controls. Each entry is a row in the grid.
+        enum HelpWindowEntry {
+            Title(&'static str),
+            Item(&'static str, &'static str),
+            Empty(),
+        }
+        use HelpWindowEntry::{Empty, Item, Title};
+
+        // Create an Egui window that starts closed.
+        egui::Window::new("Help")
+            .default_open(false)
+            .open(is_help_visible)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Describe the controls-help layout.
+                    let controls_list = [
+                        Title("App-Window"),
+                        Item("F11", "Toggle window fullscreen"),
+                        Item(
+                            "ESC",
+                            "If fullscreen, then enter windowed mode. Else, close the application",
+                        ),
+                        #[cfg(all(not(debug_assertions), target_os = "windows"))]
+                        Item(
+                            "ENTER",
+                            "Toggle the visibility of the output command prompt",
+                        ),
+                        Empty(),
+                        Title("Overlay-Window"),
+                        Item("F1", "Toggle showing this Help window"),
+                        Item("o", "Toggle showing the Options window"),
+                        Empty(),
+                        Title("Game"),
+                        Item("F5", "Generate a new random world and reset game"),
+                        Empty(),
+                        Title("Flight"),
+                        Item("UP", "Pitch down"),
+                        Item("DOWN", "Pitch up"),
+                        Item("LEFT", "Roll left"),
+                        Item("RIGHT", "Roll right"),
+                        Item("a", "Yaw left"),
+                        Item("d", "Yaw right"),
+                        Item("SPACE", "Boost"),
+                    ];
+
+                    // Grid of controls, showing the buttons and their corresponding actions.
+                    egui::Grid::new("scheme_index_grid").show(ui, |ui| {
+                        for entry in controls_list {
+                            match entry {
+                                Empty() => {}
+                                Item(key, desc) => {
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(egui::RichText::new(key).monospace().strong())
+                                    });
+                                    ui.label(desc);
+                                }
+                                Title(title) => {
+                                    // Include a separator in the first row and the title in the second.
+                                    ui.separator();
+                                    ui.heading(title);
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+            });
+    }
+
     // Update the internal GUI state and return an optional command buffer to draw the overlay.
     fn create_updated_overlay(
         &mut self,
         gui: &mut Gui,
         renderer: &mut VulkanoWindowRenderer,
-    ) -> Option<SecondaryAutoCommandBuffer> {
-        // Options window helper.
-        fn options_window(app: &mut App, ctx: &Context) {
-            // Copy the current visibility state to a temporary variable.
-            // This is needed to avoid a borrow conflict on `app`.
-            let mut is_options_visible = app.overlay.is_options_visible;
-
-            // Create an Egui window that starts closed.
-            egui::Window::new("Options")
-                .default_open(false)
-                .open(&mut is_options_visible)
-                .show(ctx, |ui| {
-                    // Create a toggle for reading inputs as a gamepad or H.O.T.A.S.
-                    ui.checkbox(
-                        &mut app.game.options.hotas_mode,
-                        "Treat gamepad as H.O.T.A.S. stick",
-                    );
-
-                    // Create an option to either hold or toggle for boost.
-                    let mut b = app.game.options.camera_boost != HoldOrToggle::Hold;
-                    if ui.checkbox(&mut b, "Toggle boost").changed() {
-                        app.game.options.camera_boost = match app.game.options.camera_boost {
-                            HoldOrToggle::Hold => HoldOrToggle::Toggle(false),
-                            HoldOrToggle::Toggle(_) => HoldOrToggle::Hold,
-                        };
-                    }
-
-                    // Allow user to view, edit, and set the world seed.
-                    ui.horizontal(|ui| {
-                        ui.text_edit_singleline(&mut app.overlay.seed_string);
-                        if ui.button("Set seed").clicked() {
-                            if let Ok(seed) = app.overlay.seed_string.parse::<u64>() {
-                                app.game.run = Run::default();
-                                app.new_random_world(seed);
-                            }
-                        }
-                    });
-
-                    // Create an option to choose whether the Y axis is inverted.
-                    ui.checkbox(&mut app.game.options.invert_y, "Inverted Y-Axis");
-                });
-
-            // Update the app with the new visibility state.
-            app.overlay.is_options_visible = is_options_visible;
-        }
-
-        // Help window helper.
-        fn help_window(ctx: &Context, is_help_visible: &mut bool) {
-            // Helper enum for creating a grid of controls. Each entry is a row in the grid.
-            enum HelpWindowEntry {
-                Title(&'static str),
-                Item(&'static str, &'static str),
-                Empty(),
-            }
-            use HelpWindowEntry::{Empty, Item, Title};
-
-            // Create an Egui window that starts closed.
-            egui::Window::new("Help")
-                .default_open(false)
-                .open(is_help_visible)
-                .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        // Describe the controls-help layout.
-                        let controls_list = [
-                            Title("App-Window"),
-                            Item("F11", "Toggle window fullscreen"),
-                            Item("ESC", "If fullscreen, then enter windowed mode. Else, close the application"),
-                            #[cfg(all(not(debug_assertions), target_os = "windows"))]
-                            Item("ENTER", "Toggle the visibility of the output command prompt"),
-                            Empty(),
-                            Title("Overlay-Window"),
-                            Item("F1", "Toggle showing this Help window"),
-                            Item("o", "Toggle showing the Options window"),
-                            Empty(),
-                            Title("Game"),
-                            Item("F5", "Generate a new random world and reset game"),
-                            Empty(),
-                            Title("Flight"),
-                            Item("UP", "Pitch down"),
-                            Item("DOWN", "Pitch up"),
-                            Item("LEFT", "Roll left"),
-                            Item("RIGHT", "Roll right"),
-                            Item("a", "Yaw left"),
-                            Item("d", "Yaw right"),
-                            Item("SPACE", "Boost"),
-                        ];
-
-                        // Grid of controls, showing the buttons and their corresponding actions.
-                        egui::Grid::new("scheme_index_grid").show(ui, |ui| {
-                            for entry in controls_list {
-                                match entry {
-                                    Empty() => {}
-                                    Item(key, desc) => {
-                                        ui.vertical_centered(|ui| ui.label(egui::RichText::new(key).monospace().strong()));
-                                        ui.label(desc);
-                                    }
-                                    Title(title) => {
-                                        // Include a separator in the first row and the title in the second.
-                                        ui.separator();
-                                        ui.heading(title);
-                                    }
-                                }
-                                ui.end_row();
-                            }
-                        });
-                    });
-                });
-        }
-
+    ) -> Option<Arc<SecondaryAutoCommandBuffer>> {
         // If no window should be shown, then don't draw anything.
         if !self.overlay.is_options_visible
             && !self.overlay.is_help_visible
@@ -681,10 +688,10 @@ impl App {
             let ctx = gui.context();
 
             // Create a window for setting options.
-            options_window(self, &ctx);
+            self.options_window(&ctx);
 
             // Create a window for describing the controls.
-            help_window(&ctx, &mut self.overlay.is_help_visible);
+            Self::help_window(&ctx, &mut self.overlay.is_help_visible);
 
             // Optionally, create a window for showing run information.
             if let Some(start_time) = self.game.run.start {
@@ -707,9 +714,9 @@ impl App {
 
         // Recreate the pipeline with the new viewport.
         self.engine.recreate_pipeline(Viewport {
-            origin: [0.; 2],
-            dimensions: window_manager.get_primary_renderer().unwrap().window_size(),
-            depth_range: 0.0..1.,
+            offset: [0.; 2],
+            extent: window_manager.get_primary_renderer().unwrap().window_size(),
+            depth_range: 0.0..=1.,
         });
     }
 }
@@ -737,14 +744,14 @@ fn create_random_world(
         usage: BufferUsage::STORAGE_BUFFER,
         ..Default::default()
     };
-    let upload_usage = AllocationCreateInfo {
-        usage: MemoryUsage::Upload,
+    let memory_usage = AllocationCreateInfo {
+        memory_type_filter: MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
         ..Default::default()
     };
     let buffer = Buffer::from_iter(
-        &allocators.memory,
+        allocators.memory.clone(),
         storage_usage,
-        upload_usage,
+        memory_usage,
         voxel_octree,
     )
     .expect("Failed to create voxel buffer.");
@@ -755,6 +762,7 @@ fn create_random_world(
             &allocators.descriptor_set,
             pipeline.layout().set_layouts().get(0).unwrap().clone(),
             [WriteDescriptorSet::buffer(0, buffer.clone())],
+            [],
         )
         .expect("Failed to create voxel buffer descriptor set."),
         buffer,

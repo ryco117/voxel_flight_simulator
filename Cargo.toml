@@ -12,19 +12,20 @@ embed-resource = "2.3.0"
 arr_macro = "0.2.1"
 bytemuck = "1.13.1"
 cgmath = { version = "0.18.0", features = ["swizzle"] }
-companion_console = { git = "https://github.com/ryco117/companion_console.git", rev = "7c329f7" }
+companion_console = { git = "https://github.com/ryco117/companion_console.git", rev = "3797176" }
 dirs = "5.0.1"
-egui = "0.21.0"
-egui_winit_vulkano = "0.24.0"
+egui = "0.23.0"
+egui_winit_vulkano = "0.26.0"
 fast_loaded_dice_roller = { version = "0.1.6", features = ["rand"] }
 gilrs = "0.10.2"
 ico = "0.3.0"
 rand = "0.8.5"
-vulkano = "0.33.0"
-vulkano-shaders = "0.33.0"
-vulkano-util = "0.33.0"
-vulkano-win = "0.33.0"
-winit = "0.28.6"
+smallvec = "1.11.2"
+vulkano = "0.34.1"
+vulkano-shaders = "0.34.0"
+vulkano-util = "0.34.1"
+vulkano-win = "0.34.0"
+winit = "0.28.7"
 
 [profile.release]
 lto = true

@@ -18,28 +18,40 @@
 
 use std::sync::Arc;
 
+use smallvec::smallvec;
 use vulkano::{
     command_buffer::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
         AutoCommandBufferBuilder, CommandBufferInheritanceInfo, CommandBufferUsage,
-        RenderPassBeginInfo, SecondaryAutoCommandBuffer, SubpassContents,
+        RenderPassBeginInfo, SecondaryAutoCommandBuffer, SubpassBeginInfo, SubpassContents,
+        SubpassEndInfo,
     },
-    descriptor_set::{allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet},
+    descriptor_set::{
+        allocator::{StandardDescriptorSetAllocator, StandardDescriptorSetAllocatorCreateInfo},
+        PersistentDescriptorSet,
+    },
     device::{Device, Queue},
     format::Format,
-    image::SampleCount,
+    image::{view::ImageView, SampleCount},
     memory::allocator::StandardMemoryAllocator,
     pipeline::{
         graphics::{
+            color_blend::{ColorBlendAttachmentState, ColorBlendState},
             input_assembly::{InputAssemblyState, PrimitiveTopology},
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            vertex_input::VertexInputState,
             viewport::{Viewport, ViewportState},
+            GraphicsPipelineCreateInfo,
         },
-        GraphicsPipeline, Pipeline, PipelineBindPoint,
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+        GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
+        PipelineShaderStageCreateInfo,
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     sync::GpuFuture,
 };
-use vulkano_util::renderer::{SwapchainImageView, VulkanoWindowRenderer};
+use vulkano_util::renderer::VulkanoWindowRenderer;
 
 pub struct Allocators {
     pub memory: Arc<StandardMemoryAllocator>,
@@ -58,9 +70,15 @@ impl Engine {
             memory: Arc::new(StandardMemoryAllocator::new_default(queue.device().clone())),
             command_buffer: StandardCommandBufferAllocator::new(
                 queue.device().clone(),
-                StandardCommandBufferAllocatorCreateInfo::default(),
+                StandardCommandBufferAllocatorCreateInfo {
+                    secondary_buffer_count: 16,
+                    ..StandardCommandBufferAllocatorCreateInfo::default()
+                },
             ),
-            descriptor_set: StandardDescriptorSetAllocator::new(queue.device().clone()),
+            descriptor_set: StandardDescriptorSetAllocator::new(
+                queue.device().clone(),
+                StandardDescriptorSetAllocatorCreateInfo::default(),
+            ),
         };
 
         let render_pass = RenderAppWithOverlay::new(queue.clone(), image_format, viewport);
@@ -74,7 +92,7 @@ impl Engine {
     pub fn render_frame(
         &mut self,
         renderer: &mut VulkanoWindowRenderer,
-        gui_command_buffer: Option<SecondaryAutoCommandBuffer>,
+        gui_command_buffer: Option<Arc<SecondaryAutoCommandBuffer>>,
         push_constants: ray_march_voxels_fs::Push,
         descriptor_set: Arc<PersistentDescriptorSet>,
     ) -> Box<dyn GpuFuture> {
@@ -144,17 +162,17 @@ impl RenderAppWithOverlay {
             device,
             attachments: {
                 color: {
-                    load: Clear,
-                    store: Store,
                     format: format,
                     samples: SampleCount::Sample1,
+                    load_op: Clear,
+                    store_op: Store,
                 }
             },
             passes: [
-                // Main app pass
+                // Main app pass.
                 { color: [color], depth_stencil: {}, input: [] },
 
-                // GUI pass
+                // GUI pass.
                 { color: [color], depth_stencil: {}, input: [] }
             ]
         )
@@ -165,8 +183,8 @@ impl RenderAppWithOverlay {
         &self,
         allocator: &StandardCommandBufferAllocator,
         before_future: Box<dyn GpuFuture>,
-        image: SwapchainImageView,
-        gui_command_buffer: Option<SecondaryAutoCommandBuffer>,
+        image: Arc<ImageView>,
+        gui_command_buffer: Option<Arc<SecondaryAutoCommandBuffer>>,
         push_constants: ray_march_voxels_fs::Push,
         descriptor_set: Arc<PersistentDescriptorSet>,
     ) -> Box<dyn GpuFuture> {
@@ -195,7 +213,10 @@ impl RenderAppWithOverlay {
                     clear_values: vec![Some([0.0; 4].into())],
                     ..RenderPassBeginInfo::framebuffer(framebuffer)
                 },
-                SubpassContents::SecondaryCommandBuffers,
+                SubpassBeginInfo {
+                    contents: SubpassContents::SecondaryCommandBuffers,
+                    ..SubpassBeginInfo::default()
+                },
             )
             .unwrap();
 
@@ -207,7 +228,13 @@ impl RenderAppWithOverlay {
         // Add app commands to primary command buffer and move to next subpass.
         builder.execute_commands(app_command_buffer).unwrap();
         builder
-            .next_subpass(SubpassContents::SecondaryCommandBuffers)
+            .next_subpass(
+                SubpassEndInfo::default(),
+                SubpassBeginInfo {
+                    contents: SubpassContents::SecondaryCommandBuffers,
+                    ..SubpassBeginInfo::default()
+                },
+            )
             .unwrap();
 
         // Add optional GUI command buffer to primary command buffer.
@@ -216,7 +243,7 @@ impl RenderAppWithOverlay {
         }
 
         // End render pass and execute primary command buffer.
-        builder.end_render_pass().unwrap();
+        builder.end_render_pass(SubpassEndInfo::default()).unwrap();
         let command_buffer = builder.build().unwrap();
         let after_future = before_future
             .then_execute(self.queue.clone(), command_buffer)
@@ -239,24 +266,60 @@ struct AppPipeline {
 impl AppPipeline {
     // Create a graphics pipeline for the main app render pass.
     pub fn new(queue: &Arc<Queue>, subpass: Subpass, viewport: Viewport) -> Self {
+        // Setup relevant context for creating the pipeline from these shaders.
         let device = queue.device();
-        let vs = entire_view_vs::load(device.clone()).expect("Failed to create shader module.");
-        let fs =
-            ray_march_voxels_fs::load(device.clone()).expect("Failed to create shader module.");
-
-        let pipeline = GraphicsPipeline::start()
-            // A Vulkan shader may contain multiple entry points, so we specify which one.
-            .vertex_shader(vs.entry_point("main").unwrap(), ())
-            // Indicate the type of the primitives (the default is a list of triangles).
-            .input_assembly_state(
-                InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
-            )
-            .fragment_shader(fs.entry_point("main").unwrap(), ())
-            // Set a fixed viewport.
-            .viewport_state(ViewportState::viewport_fixed_scissor_irrelevant([viewport]))
-            .render_pass(subpass.clone())
-            .build(device.clone())
+        let vs = entire_view_vs::load(device.clone())
+            .expect("Failed to create shader module.")
+            .entry_point("main")
             .unwrap();
+        let fs = ray_march_voxels_fs::load(device.clone())
+            .expect("Failed to create shader module.")
+            .entry_point("main")
+            .unwrap();
+        let stages = smallvec![
+            PipelineShaderStageCreateInfo::new(vs),
+            PipelineShaderStageCreateInfo::new(fs),
+        ];
+        let layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                .into_pipeline_layout_create_info(device.clone())
+                .unwrap(),
+        )
+        .unwrap();
+
+        let pipeline = GraphicsPipeline::new(
+            device.clone(),
+            None,
+            GraphicsPipelineCreateInfo {
+                stages,
+                vertex_input_state: Some(VertexInputState::default()),
+
+                // Indicate the type of the primitive drawn (the default is a list of triangles).
+                input_assembly_state: Some(InputAssemblyState {
+                    topology: PrimitiveTopology::TriangleStrip,
+                    ..InputAssemblyState::default()
+                }),
+                // Set a fixed viewport.
+                viewport_state: Some(ViewportState {
+                    viewports: smallvec![viewport],
+                    ..ViewportState::default()
+                }),
+
+                // Necessary defaults.
+                rasterization_state: Some(RasterizationState::default()),
+                multisample_state: Some(MultisampleState::default()),
+                color_blend_state: Some(ColorBlendState {
+                    attachments: (0..subpass.num_color_attachments())
+                        .map(|_| ColorBlendAttachmentState::default())
+                        .collect(),
+                    ..Default::default()
+                }),
+                subpass: Some(subpass.clone().into()), // Specify the subpass where this pipeline will be used.
+                ..GraphicsPipelineCreateInfo::layout(layout)
+            },
+        )
+        .expect("Failed to create graphics pipeline");
 
         AppPipeline { subpass, pipeline }
     }
@@ -267,7 +330,7 @@ impl AppPipeline {
         queue: &Arc<Queue>,
         push_constants: ray_march_voxels_fs::Push,
         descriptor_set: Arc<PersistentDescriptorSet>,
-    ) -> SecondaryAutoCommandBuffer {
+    ) -> Arc<SecondaryAutoCommandBuffer> {
         let mut builder = AutoCommandBufferBuilder::secondary(
             allocator,
             queue.queue_family_index(),
@@ -281,15 +344,18 @@ impl AppPipeline {
 
         builder
             .push_constants(self.pipeline.layout().clone(), 0, push_constants)
+            .unwrap()
             .bind_pipeline_graphics(self.pipeline.clone())
+            .unwrap()
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 self.pipeline.layout().clone(),
                 0,
                 descriptor_set,
             )
+            .unwrap()
             .draw(4, 1, 0, 0)
-            .unwrap();
+            .expect("Failed to complete draw command");
 
         builder.build().unwrap()
     }
