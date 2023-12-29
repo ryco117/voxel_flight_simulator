@@ -280,7 +280,7 @@ vec4 escapeColour(vec3 d) {
 // https://www.youtube.com/c/InigoQuilez
 // https://iquilezles.org
 // https://www.shadertoy.com/view/XdXGW8
-vec3 iq_inspired_position_noise(ivec3 z) {
+vec3 iq_inspired_position_noise(ivec3 z, float seed) {
     // 2D to 1D  (feel free to replace by some other)
     int n = z.x + z.y*1111 + z.z*5227;
 
@@ -289,23 +289,33 @@ vec3 iq_inspired_position_noise(ivec3 z) {
     n = (n*(n*n*15731+789221)+1376312589)>>16;
 
     // simple random vectors
-    return vec3(cos(float(n)), sin(float(n)), 2.0*fract(log(abs(float(n)) + 1.0)) - 1.0);
+    return vec3(cos(float(n) + seed), sin(float(n) - 7.0*seed), 2.0*fract(log(abs(float(n)) + 1.0)) - 1.0 + sin(seed));
 }
-float iq_inspired_noise(vec3 p) {
+float iq_inspired_noise(vec3 p, float seed) {
     ivec3 i = ivec3(floor(p));
 	vec3 f = fract(p);
 
 	vec3 u = f*f*(3.0 - 2.0*f); // feel free to replace by a quintic smoothstep instead
 
     return mix(
-		mix(mix(dot(iq_inspired_position_noise(i), f),
-				dot(iq_inspired_position_noise(i + ivec3(1, 0, 0)), f - vec3(1.0, 0.0, 0.0)), u.x),
-			mix(dot(iq_inspired_position_noise(i + ivec3(0, 1, 0)), f - vec3(0.0, 1.0, 0.0)),
-				dot(iq_inspired_position_noise(i + ivec3(1, 1, 0)), f - vec3(1.0, 1.0, 0.0)), u.x), u.y),
-		mix(mix(dot(iq_inspired_position_noise(i + ivec3(0, 0, 1)), f - vec3(0.0, 0.0, 1.0)),
-				dot(iq_inspired_position_noise(i + ivec3(1, 0, 1)), f - vec3(1.0, 0.0, 1.0)), u.x),
-			mix(dot(iq_inspired_position_noise(i + ivec3(0, 1, 1)), f - vec3(0.0, 1.0, 1.0)),
-				dot(iq_inspired_position_noise(i + ivec3(1, 1, 1)), f - vec3(1.0, 1.0, 1.0)), u.x), u.y), u.z);
+		mix(mix(dot(iq_inspired_position_noise(i, seed), f),
+				dot(iq_inspired_position_noise(i + ivec3(1, 0, 0), seed), f - vec3(1.0, 0.0, 0.0)), u.x),
+			mix(dot(iq_inspired_position_noise(i + ivec3(0, 1, 0), seed), f - vec3(0.0, 1.0, 0.0)),
+				dot(iq_inspired_position_noise(i + ivec3(1, 1, 0), seed), f - vec3(1.0, 1.0, 0.0)), u.x), u.y),
+		mix(mix(dot(iq_inspired_position_noise(i + ivec3(0, 0, 1), seed), f - vec3(0.0, 0.0, 1.0)),
+				dot(iq_inspired_position_noise(i + ivec3(1, 0, 1), seed), f - vec3(1.0, 0.0, 1.0)), u.x),
+			mix(dot(iq_inspired_position_noise(i + ivec3(0, 1, 1), seed), f - vec3(0.0, 1.0, 1.0)),
+				dot(iq_inspired_position_noise(i + ivec3(1, 1, 1), seed), f - vec3(1.0, 1.0, 1.0)), u.x), u.y), u.z);
+}
+
+float cloudDensity(mat2 m, float cloudSeed, vec3 p) {
+	vec3 uv = 2.5*p;
+	float density = 0.5*iq_inspired_noise(uv, cloudSeed); uv.xy = m*uv.xy;
+	density += 0.25*iq_inspired_noise(uv, cloudSeed); uv.yz = -(m*uv.yz);
+	density += 0.125*iq_inspired_noise(uv, cloudSeed); uv.zx = m*uv.zx;
+	density += 0.0625*iq_inspired_noise(uv, cloudSeed); uv.yx = -(m*uv.yx);
+
+	return density;
 }
 
 const float minTravel = 0.000005;
@@ -331,10 +341,25 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 		int maxDepth = clamp(int(9.85 - 1.4427*log(length(p - origin))), 3, globalMaxDepth);
 		uint index = voxelIndex(s, scale, maxDepth);
 
+		// Cloud start density.
+		mat2 m = mat2(1.6,  1.2, -1.2,  1.6);
+		float cloudSeed = 0.1*push.time;
+		float startDensity = cloudDensity(m, cloudSeed, p);
+
 		// Is empty or filled?
 		if(index == emptyVoxel) {
+			// Update position.
 			float t = escapeCubeDistance(s, d, invD) * scale;
 			p += t * d;
+
+			// Cloud end density.
+			float endDensity = cloudDensity(m, cloudSeed, p);
+			float accCloudDensity = 0.5*t*(startDensity + endDensity);
+
+			if(accCloudDensity > 0.0) {
+				accCloudDensity = 0.4*accCloudDensity;
+				col = mix(col, vec4(1.0), accCloudDensity);
+			}
 		} else {
 			Voxel voxel = voxelOctree.voxels[index];
 			if(voxel.vtype == 2) {
@@ -342,10 +367,12 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 				float t = goalVoxelTraversal(s, d);
 				float r2 = dot(s, s);
 				if(t >= 0.0 || r2 < goalRadiusSquared) {
+					// We have hit the goal voxel!
 					t *= scale;
 					p += t * d;
 					gradient = normalize(s);
 
+					// Apply portal coloring.
 					float colTemp = sin(7.0*push.time + 1.25*s.x + 1.5*s.y - 1.5*s.z);
 					float colTemp2 = cos(8.0*push.time - 2.5*s.x * 3.0*s.y * 2.0*s.z);
 					colTemp = (colTemp + colTemp2) / 2.0;
@@ -356,7 +383,7 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 
 					return scaleColor(i, col/col.w);
 				} else {
-					// Gravity-based raytracing
+					// Gravity-based raytracing.
 					vec3 c = p - scale*s;
 					for(int j = 0; j < maxIterations; ++j) {
 						r2 = dot(s, s);
@@ -372,24 +399,34 @@ vec4 castVoxelRay(vec3 p, vec3 d) {
 					p = q;
 				}
 			} else {
-				// We have hit a mirror voxel. Reflect and continue
 				gradient = cubeNorm(s);
-				p += projectToOutsideDistance(s) * scale;
+				vec3 t = projectToOutsideDistance(s);
+				p += t*scale;
+
+				// Cloud end density.
+				float endDensity = cloudDensity(m, cloudSeed, p);
+				float accCloudDensity = 0.5*length(t)*(startDensity + endDensity);
+
+				if(accCloudDensity > 0.0) {
+					accCloudDensity = 0.4*accCloudDensity;
+					col = mix(col, vec4(1.0), accCloudDensity);
+				}
 
 				if(voxel.vtype == 3 && reflections < 2) {
+					// We have hit a mirror voxel. Reflect and continue
 					reflections += 1;
 					d -= 2.0*dot(d, gradient)*gradient;
 					invD = 1.0 / d;
 
 					vec3 uv = 32.0*s;
 					mat2 m = mat2(1.6,  1.2, -1.2,  1.6);
-					float mirrorFuzz = 0.5*iq_inspired_noise(uv); uv.xy = m*uv.xy;
-					mirrorFuzz += 0.25*iq_inspired_noise(uv); uv.yz = -(m*uv.yz);
-					mirrorFuzz += 0.125*iq_inspired_noise(uv); uv.zx = m*uv.zx;
-					mirrorFuzz += 0.0625*iq_inspired_noise(uv); uv.yx = -(m*uv.yx);
-					mirrorFuzz += 0.03125*iq_inspired_noise(uv); uv.zy = m*uv.zy;
-					mirrorFuzz += 0.015625*iq_inspired_noise(uv); uv.xz = -(m*uv.xz);
-					mirrorFuzz += 0.0078125*iq_inspired_noise(uv);
+					float mirrorFuzz = 0.5*iq_inspired_noise(uv, 0); uv.xy = m*uv.xy;
+					mirrorFuzz += 0.25*iq_inspired_noise(uv, 0); uv.yz = -(m*uv.yz);
+					mirrorFuzz += 0.125*iq_inspired_noise(uv, 0); uv.zx = m*uv.zx;
+					mirrorFuzz += 0.0625*iq_inspired_noise(uv, 0); uv.yx = -(m*uv.yx);
+					mirrorFuzz += 0.03125*iq_inspired_noise(uv, 0); uv.zy = m*uv.zy;
+					mirrorFuzz += 0.015625*iq_inspired_noise(uv, 0); uv.xz = -(m*uv.xz);
+					mirrorFuzz += 0.0078125*iq_inspired_noise(uv, 0);
 					mirrorFuzz *= 0.16;
 
 					col += col + col + col + vec4(vec3(mirrorFuzz) + phongLighting(voxel.averageColour.xyz, castShadowRay(p, push.light_dir, 1.0 / push.light_dir, maxDepth)), 1.0);

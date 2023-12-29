@@ -24,12 +24,12 @@ use crate::voxels::{self, VoxelCompact};
 use cgmath::{Quaternion, Rad, Rotation, Rotation3, Vector3};
 use egui::Context;
 use egui_winit_vulkano::{Gui, GuiConfig};
-use vulkano::memory::allocator::MemoryTypeFilter;
+use vulkano::buffer::Buffer;
+use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter};
 use vulkano::{
-    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
+    buffer::{BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::SecondaryAutoCommandBuffer,
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
-    memory::allocator::AllocationCreateInfo,
     pipeline::{graphics::viewport::Viewport, GraphicsPipeline, Pipeline},
 };
 use vulkano_util::{
@@ -106,7 +106,7 @@ impl App {
 
         // Initialize standalone engine.
         let engine = helens::Engine::new(
-            context.graphics_queue(),
+            renderer.graphics_queue(),
             image_format,
             Viewport {
                 offset: [0.; 2],
@@ -144,8 +144,8 @@ impl App {
         // Initialize storage buffer with random voxel-octree data.
         let (descriptor_set, voxel_buffer) = create_random_world(
             engine.allocators(),
-            &mut random,
             engine.pipeline(),
+            &mut random,
             &mut log_file,
         );
 
@@ -183,8 +183,8 @@ impl App {
         // Create GPU buffer and descriptor set for new world.
         let (descriptor_set, voxel_buffer) = create_random_world(
             self.engine.allocators(),
-            &mut self.random,
             self.engine.pipeline(),
+            &mut self.random,
             &mut self.log_file,
         );
         self.descriptor_set = descriptor_set;
@@ -723,8 +723,8 @@ impl App {
 
 fn create_random_world(
     allocators: &Allocators,
-    random: &mut voxels::RandomOctreeHelper,
     pipeline: &Arc<GraphicsPipeline>,
+    random: &mut voxels::RandomOctreeHelper,
     log_file: &mut LogFile,
 ) -> (Arc<PersistentDescriptorSet>, Subbuffer<[VoxelCompact]>) {
     // Generate a random voxel-octree.
@@ -740,12 +740,13 @@ fn create_random_world(
     );
 
     // Upload the voxel-octree to the GPU.
-    let storage_usage = BufferCreateInfo {
+    let storage_usage: BufferCreateInfo = BufferCreateInfo {
         usage: BufferUsage::STORAGE_BUFFER,
         ..Default::default()
     };
     let memory_usage = AllocationCreateInfo {
-        memory_type_filter: MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+        memory_type_filter: MemoryTypeFilter::HOST_SEQUENTIAL_WRITE
+            | MemoryTypeFilter::PREFER_DEVICE,
         ..Default::default()
     };
     let buffer = Buffer::from_iter(

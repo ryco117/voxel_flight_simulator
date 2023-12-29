@@ -65,7 +65,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(queue: &Arc<Queue>, image_format: Format, viewport: Viewport) -> Self {
+    pub fn new(queue: Arc<Queue>, image_format: Format, viewport: Viewport) -> Self {
         let allocators = Allocators {
             memory: Arc::new(StandardMemoryAllocator::new_default(queue.device().clone())),
             command_buffer: StandardCommandBufferAllocator::new(
@@ -81,7 +81,7 @@ impl Engine {
             ),
         };
 
-        let render_pass = RenderAppWithOverlay::new(queue.clone(), image_format, viewport);
+        let render_pass = RenderAppWithOverlay::new(queue, image_format, viewport);
 
         Engine {
             allocators,
@@ -117,7 +117,7 @@ impl Engine {
     // Recreate the graphics pipeline given a new viewport.
     pub fn recreate_pipeline(&mut self, viewport: Viewport) {
         self.app_renderer.app_pipeline = AppPipeline::new(
-            &self.app_renderer.queue,
+            self.app_renderer.queue.device(),
             self.app_renderer.app_pipeline.subpass.clone(),
             viewport,
         );
@@ -148,7 +148,7 @@ impl RenderAppWithOverlay {
 
         // Create a graphics pipeline for the app's render pass.
         let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
-        let app_pipeline = AppPipeline::new(&queue, subpass, viewport);
+        let app_pipeline = AppPipeline::new(queue.device(), subpass, viewport);
 
         RenderAppWithOverlay {
             queue,
@@ -265,9 +265,8 @@ struct AppPipeline {
 
 impl AppPipeline {
     // Create a graphics pipeline for the main app render pass.
-    pub fn new(queue: &Arc<Queue>, subpass: Subpass, viewport: Viewport) -> Self {
+    pub fn new(device: &Arc<Device>, subpass: Subpass, viewport: Viewport) -> Self {
         // Setup relevant context for creating the pipeline from these shaders.
-        let device = queue.device();
         let vs = entire_view_vs::load(device.clone())
             .expect("Failed to create shader module.")
             .entry_point("main")
@@ -315,7 +314,8 @@ impl AppPipeline {
                         .collect(),
                     ..Default::default()
                 }),
-                subpass: Some(subpass.clone().into()), // Specify the subpass where this pipeline will be used.
+                // Specify the subpass where this pipeline will be used.
+                subpass: Some(subpass.clone().into()),
                 ..GraphicsPipelineCreateInfo::layout(layout)
             },
         )
@@ -366,6 +366,7 @@ impl AppPipeline {
     }
 }
 
+/// Minimal vertex shader which draws a quad over the entire viewport.
 mod entire_view_vs {
     vulkano_shaders::shader! {
         ty: "vertex",
@@ -385,6 +386,7 @@ void main() {
     }
 }
 
+/// Import the fragment shader by file path.
 pub mod ray_march_voxels_fs {
     vulkano_shaders::shader! {
         ty: "fragment",

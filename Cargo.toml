@@ -10,14 +10,14 @@ embed-resource = "2.3.0"
 
 [dependencies]
 arr_macro = "0.2.1"
-bytemuck = "1.13.1"
+bytemuck = "1.14.0"
 cgmath = { version = "0.18.0", features = ["swizzle"] }
 companion_console = { git = "https://github.com/ryco117/companion_console.git", rev = "3797176" }
 dirs = "5.0.1"
-egui = "0.23.0"
-egui_winit_vulkano = "0.26.0"
+egui = "0.24.1"
+egui_winit_vulkano = "0.27.0"
 fast_loaded_dice_roller = { version = "0.1.6", features = ["rand"] }
-gilrs = "0.10.2"
+gilrs = "0.10.4"
 ico = "0.3.0"
 rand = "0.8.5"
 smallvec = "1.11.2"
